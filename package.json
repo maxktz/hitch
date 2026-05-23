@@ -1,0 +1,13 @@
+{
+  "name": "agentmux",
+  "version": "0.1.0",
+  "description": "Give AI agents visibility into your tmux sessions",
+  "type": "module",
+  "bin": {
+    "agentmux": "./src/index.js"
+  },
+  "dependencies": {
+    "chalk": "^5.4.1",
+    "commander": "^13.1.0"
+  }
+}
