@@ -1,3 +1,4 @@
+use clap::{Args, Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::ffi::{CString, OsString};
@@ -15,6 +16,136 @@ const MSG_PUSH: u8 = 0;
 const MSG_ATTACH: u8 = 1;
 const MSG_DETACH: u8 = 2;
 const MSG_WINCH: u8 = 3;
+
+const RESET: &str = "\x1b[0m";
+const DIM: &str = "\x1b[2m";
+const GREEN: &str = "\x1b[32m";
+
+struct Style {
+    enabled: bool,
+}
+
+#[derive(Parser)]
+#[command(name = "muxi", version)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    New,
+    List(ListArgs),
+    ListSessions(ListArgs),
+    ListPanes(ListArgs),
+    Attach(SessionArg),
+    SendKeys(SendKeysArgs),
+    CapturePane(CapturePaneArgs),
+    KillSession(SessionArg),
+    Info(InfoArgs),
+    Init,
+    Exit,
+}
+
+#[derive(Args)]
+struct ListArgs {
+    #[arg(long)]
+    all: bool,
+    #[arg(long)]
+    json: bool,
+    #[arg(long)]
+    dir: Option<PathBuf>,
+    #[arg(long, default_value_t = 5)]
+    tail: usize,
+}
+
+#[derive(Args)]
+struct SessionArg {
+    session: String,
+}
+
+#[derive(Args)]
+struct SendKeysArgs {
+    #[arg(short = 't', long = "target")]
+    target: String,
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    keys: Vec<String>,
+}
+
+#[derive(Args)]
+struct CapturePaneArgs {
+    #[arg(short = 't', long = "target")]
+    target: String,
+    #[arg(short = 'p')]
+    print: bool,
+    #[arg(long)]
+    tail: Option<usize>,
+    #[arg(long)]
+    raw: bool,
+}
+
+#[derive(Args)]
+struct InfoArgs {
+    #[arg(long)]
+    debug: bool,
+}
+
+impl Style {
+    fn stdout() -> Self {
+        Self {
+            enabled: env::var_os("NO_COLOR").is_none()
+                && unsafe { libc::isatty(libc::STDOUT_FILENO) } == 1,
+        }
+    }
+
+    fn stderr() -> Self {
+        Self {
+            enabled: env::var_os("NO_COLOR").is_none()
+                && unsafe { libc::isatty(libc::STDERR_FILENO) } == 1,
+        }
+    }
+
+    fn paint(&self, value: impl AsRef<str>, codes: &[&str]) -> String {
+        let value = value.as_ref();
+        if !self.enabled {
+            return value.to_string();
+        }
+
+        format!("{}{}{}", codes.join(""), value, RESET)
+    }
+
+    fn brand(&self) -> String {
+        self.paint("muxi", &[GREEN])
+    }
+
+    fn id(&self, value: impl AsRef<str>) -> String {
+        self.paint(value, &[GREEN])
+    }
+
+    fn label(&self, value: impl AsRef<str>) -> String {
+        self.paint(value, &[DIM])
+    }
+
+    fn path(&self, value: impl AsRef<str>) -> String {
+        value.as_ref().to_string()
+    }
+
+    fn command(&self, value: impl AsRef<str>) -> String {
+        value.as_ref().to_string()
+    }
+
+    fn muted(&self, value: impl AsRef<str>) -> String {
+        self.paint(value, &[DIM])
+    }
+
+    fn success(&self, value: impl AsRef<str>) -> String {
+        value.as_ref().to_string()
+    }
+
+    fn error(&self, value: impl AsRef<str>) -> String {
+        value.as_ref().to_string()
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct SessionRecord {
@@ -107,65 +238,44 @@ impl TitleFilter {
 
 fn main() {
     if let Err(err) = run() {
-        eprintln!("muxi: {err}");
+        let style = Style::stderr();
+        eprintln!("{} {}", style.error("error:"), err);
         process::exit(1);
     }
 }
 
 fn run() -> io::Result<()> {
-    let mut args = env::args().skip(1).collect::<Vec<_>>();
-    let cmd = if args.is_empty() {
-        "help".to_string()
-    } else {
-        args.remove(0)
-    };
-
-    match cmd.as_str() {
-        "shell" => cmd_shell(),
-        "list" | "list-sessions" | "list-panes" => cmd_list(&args),
-        "attach" => cmd_attach(args.first().map(String::as_str)),
-        "send-keys" => cmd_send_keys(&args),
-        "capture-pane" => cmd_capture_pane(&args),
-        "kill-session" => cmd_kill_session(args.first().map(String::as_str)),
-        "info" => cmd_info(),
-        "init" => {
-            println!("# muxi: auto-wrap is disabled.");
-            println!("# Use \"muxi shell\" when you want a terminal to be visible to agents.");
-            Ok(())
-        }
-        "exit" => {
-            println!("Detach from a muxi shell with Ctrl-\\.");
-            Ok(())
-        }
-        "help" | "--help" | "-h" => {
-            print_help();
-            Ok(())
-        }
-        "--version" | "-V" => {
-            println!("0.1.0");
-            Ok(())
-        }
-        other => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("unknown command: {other}"),
-        )),
+    let cli = Cli::parse();
+    if let Some(command) = cli.command {
+        return match command {
+            Commands::New => cmd_new(),
+            Commands::List(args) | Commands::ListSessions(args) | Commands::ListPanes(args) => {
+                cmd_list(&args)
+            }
+            Commands::Attach(args) => cmd_attach(Some(&args.session)),
+            Commands::SendKeys(args) => cmd_send_keys(&args),
+            Commands::CapturePane(args) => cmd_capture_pane(&args),
+            Commands::KillSession(args) => cmd_kill_session(Some(&args.session)),
+            Commands::Info(args) => cmd_info(&args),
+            Commands::Init => {
+                let style = Style::stdout();
+                println!("# {}: auto-wrap is disabled.", style.brand());
+                println!("# Run \"muxi\" when you want a terminal to be visible to agents.");
+                Ok(())
+            }
+            Commands::Exit => {
+                let style = Style::stdout();
+                println!("{} detach with {}", style.brand(), style.command("Ctrl-\\"));
+                Ok(())
+            }
+        };
     }
-}
 
-fn print_help() {
-    println!("Usage: muxi [command]\n");
-    println!("Commands:");
-    println!("  shell");
-    println!("  list [--all] [--json] [--dir <path>] [--tail <n>]");
-    println!("  list-sessions [--all] [--json] [--dir <path>] [--tail <n>]");
-    println!("  list-panes [--all] [--json] [--dir <path>] [--tail <n>]");
-    println!("  attach <session>");
-    println!("  send-keys -t <session> [keys...]");
-    println!("  capture-pane -t <session> [-p] [--tail <n>] [--raw]");
-    println!("  kill-session <session>");
-    println!("  info");
-    println!("  init");
-    println!("  exit");
+    if env::var_os("MUXI_SESSION").is_some() {
+        cmd_info(&InfoArgs { debug: false })
+    } else {
+        cmd_new()
+    }
 }
 
 fn state_dir() -> PathBuf {
@@ -215,7 +325,7 @@ fn next_session_id() -> io::Result<String> {
     Ok(next.to_string())
 }
 
-fn cmd_shell() -> io::Result<()> {
+fn cmd_new() -> io::Result<()> {
     if let Ok(session) = env::var("MUXI_SESSION") {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
@@ -245,8 +355,13 @@ fn cmd_shell() -> io::Result<()> {
         serde_json::to_string_pretty(&record).unwrap(),
     )?;
 
-    println!("muxi: joined session {id}");
-    println!("muxi: detach with Ctrl-\\");
+    let style = Style::stdout();
+    println!(
+        "{} joined session {} {}",
+        style.brand(),
+        style.id(&id),
+        style.muted("(Ctrl-\\ to exit)")
+    );
 
     let listener = UnixListener::bind(&record.socket)?;
     let master_pid = unsafe { libc::fork() };
@@ -269,7 +384,7 @@ fn cmd_shell() -> io::Result<()> {
 
     fs::write(&record.master_pid_file, format!("{master_pid}\n"))?;
     drop(listener);
-    let status = attach_socket(&record.socket)?;
+    let status = attach_socket(&record.socket, &record.id)?;
     let _ = fs::remove_dir_all(&dir);
     process::exit(status);
 }
@@ -403,7 +518,11 @@ fn fork_shell(shell: &str, record: &SessionRecord) -> io::Result<(RawFd, libc::p
         }
         let c_shell = CString::new(shell.as_bytes()).unwrap();
         unsafe {
-            libc::execl(c_shell.as_ptr(), c_shell.as_ptr(), std::ptr::null::<libc::c_char>());
+            libc::execl(
+                c_shell.as_ptr(),
+                c_shell.as_ptr(),
+                std::ptr::null::<libc::c_char>(),
+            );
             libc::_exit(127);
         }
     }
@@ -427,10 +546,12 @@ fn handle_packet(pty_fd: RawFd, client: &mut Client, packet: Packet) -> io::Resu
     Ok(())
 }
 
-fn attach_socket(socket: &str) -> io::Result<i32> {
+fn attach_socket(socket: &str, session_id: &str) -> io::Result<i32> {
     let mut stream = UnixStream::connect(socket)?;
     let original = terminal_raw()?;
     let _restore = TermRestore(original);
+    let style = Style::stdout();
+    let exit_message = || style.muted(format!("[muxi exited session {session_id}]"));
 
     send_packet(&mut stream, MSG_ATTACH, &[])?;
     send_winch(&mut stream)?;
@@ -464,7 +585,7 @@ fn attach_socket(socket: &str) -> io::Result<i32> {
             let mut buf = [0u8; BUF_SIZE];
             let len = stream.read(&mut buf)?;
             if len == 0 {
-                println!("\r\n[EOF - muxi terminating]");
+                println!("\r\n{}", exit_message());
                 return Ok(0);
             }
             io::stdout().write_all(&buf[..len])?;
@@ -478,7 +599,7 @@ fn attach_socket(socket: &str) -> io::Result<i32> {
             }
             if buf[0] == (b'\\' & 0x1f) {
                 send_packet(&mut stream, MSG_DETACH, &[])?;
-                println!("\r\n[detached]");
+                println!("\r\n{}", exit_message());
                 return Ok(0);
             }
             send_packet(&mut stream, MSG_PUSH, &buf[..len as usize])?;
@@ -580,18 +701,12 @@ fn write_all_fd(fd: RawFd, mut bytes: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-fn cmd_list(args: &[String]) -> io::Result<()> {
-    let json = args.iter().any(|a| a == "--json");
-    let show_all = args.iter().any(|a| a == "--all");
-    let dir = option_value(args, "--dir").map(PathBuf::from);
-    let tail = option_value(args, "--tail")
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(5);
+fn cmd_list(args: &ListArgs) -> io::Result<()> {
     let mut sessions = read_sessions()?;
 
-    let filter_dir = if let Some(dir) = dir {
+    let filter_dir = if let Some(dir) = args.dir.clone() {
         Some(dir)
-    } else if show_all {
+    } else if args.all {
         None
     } else {
         Some(env::current_dir()?)
@@ -608,31 +723,53 @@ fn cmd_list(args: &[String]) -> io::Result<()> {
 
     sessions.sort_by_key(|session| session.id.parse::<u32>().unwrap_or(u32::MAX));
 
-    if json {
+    if args.json {
         let values = sessions
             .iter()
-            .map(|s| session_json(s, tail))
+            .map(|s| session_json(s, args.tail))
             .collect::<Vec<_>>();
         println!("{}", serde_json::to_string_pretty(&values).unwrap());
         return Ok(());
     }
 
     if sessions.is_empty() {
-        println!("No matching muxi sessions found.");
+        let style = Style::stdout();
+        println!("{} {}", style.brand(), style.muted("no matching sessions"));
         return Ok(());
     }
 
+    let style = Style::stdout();
     for session in sessions {
-        println!("-- Session {} ------------------------------", session.id);
-        println!("Dir: {}", session.cwd);
-        println!("Command: {}", command_for_session(&session));
-        println!("Status: running");
-        println!("Attached: {}", is_attached(&session.socket));
-        let lines = tail_lines(&session.log, tail, false);
+        println!(
+            "{} {} {}",
+            style.muted("session"),
+            style.id(&session.id),
+            style.muted("─".repeat(32))
+        );
+        println!("{} {}", style.label("dir"), style.path(&session.cwd));
+        println!(
+            "{} {}",
+            style.label("cmd"),
+            style.command(command_for_session(&session))
+        );
+        println!("{} {}", style.label("status"), style.success("running"));
+        println!(
+            "{} {}",
+            style.label("attached"),
+            if is_attached(&session.socket) {
+                style.success("yes")
+            } else {
+                style.muted("no")
+            }
+        );
+        let lines = tail_lines(&session.log, args.tail, false);
         if !lines.is_empty() {
-            println!("\n--- output tail ({} lines) ---", lines.len());
+            println!(
+                "\n{}",
+                style.muted(format!("output tail ({} lines)", lines.len()))
+            );
             for line in lines {
-                println!("  {line}");
+                println!("  {}", style.muted(line));
             }
         }
         println!();
@@ -703,25 +840,27 @@ fn find_session(id: Option<&str>) -> io::Result<SessionRecord> {
 }
 
 fn cmd_attach(id: Option<&str>) -> io::Result<()> {
+    if let Ok(session) = env::var("MUXI_SESSION") {
+        let style = Style::stderr();
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!(
+                "already inside muxi session {}; detach first with {}",
+                style.id(session),
+                style.command("Ctrl-\\")
+            ),
+        ));
+    }
+
     let session = find_session(id)?;
-    let status = attach_socket(&session.socket)?;
+    let status = attach_socket(&session.socket, &session.id)?;
     process::exit(status);
 }
 
-fn cmd_send_keys(args: &[String]) -> io::Result<()> {
-    let target = option_value(args, "-t").or_else(|| option_value(args, "--target"));
-    let session = find_session(target.as_deref())?;
+fn cmd_send_keys(args: &SendKeysArgs) -> io::Result<()> {
+    let session = find_session(Some(&args.target))?;
     let mut payload = Vec::new();
-    let mut skip = 0;
-    for arg in args {
-        if skip > 0 {
-            skip -= 1;
-            continue;
-        }
-        if arg == "-t" || arg == "--target" {
-            skip = 1;
-            continue;
-        }
+    for arg in &args.keys {
         payload.extend(key_to_bytes(arg));
     }
     let mut stream = UnixStream::connect(session.socket)?;
@@ -738,19 +877,22 @@ fn key_to_bytes(key: &str) -> Vec<u8> {
         "Escape" | "Esc" => vec![0x1b],
         "Space" => vec![b' '],
         "Backspace" | "BSpace" => vec![0x7f],
-        _ if key.starts_with("C-") && key.len() == 3 => vec![key.as_bytes()[2].to_ascii_uppercase() & 0x1f],
+        _ if key.starts_with("C-") && key.len() == 3 => {
+            vec![key.as_bytes()[2].to_ascii_uppercase() & 0x1f]
+        }
         _ => key.as_bytes().to_vec(),
     }
 }
 
-fn cmd_capture_pane(args: &[String]) -> io::Result<()> {
-    let target = option_value(args, "-t").or_else(|| option_value(args, "--target"));
-    let session = find_session(target.as_deref())?;
-    let raw = args.iter().any(|a| a == "--raw");
-    let tail = option_value(args, "--tail").and_then(|v| v.parse::<usize>().ok());
+fn cmd_capture_pane(args: &CapturePaneArgs) -> io::Result<()> {
+    let session = find_session(Some(&args.target))?;
     let text = fs::read_to_string(session.log).unwrap_or_default();
-    let text = if raw { text } else { strip_ansi(&text).replace('\r', "") };
-    if let Some(tail) = tail {
+    let text = if args.raw {
+        text
+    } else {
+        strip_ansi(&text).replace('\r', "")
+    };
+    if let Some(tail) = args.tail {
         let lines = text.lines().rev().take(tail).collect::<Vec<_>>();
         for line in lines.into_iter().rev() {
             println!("{line}");
@@ -763,9 +905,12 @@ fn cmd_capture_pane(args: &[String]) -> io::Result<()> {
 
 fn cmd_kill_session(id: Option<&str>) -> io::Result<()> {
     let session = find_session(id)?;
-    for pid in [read_pid(&session.master_pid_file), read_pid(&session.pid_file)]
-        .into_iter()
-        .flatten()
+    for pid in [
+        read_pid(&session.master_pid_file),
+        read_pid(&session.pid_file),
+    ]
+    .into_iter()
+    .flatten()
     {
         unsafe {
             libc::kill(pid as libc::pid_t, libc::SIGTERM);
@@ -775,21 +920,17 @@ fn cmd_kill_session(id: Option<&str>) -> io::Result<()> {
     Ok(())
 }
 
-fn cmd_info() -> io::Result<()> {
-    let session = env::var("MUXI_SESSION").map_err(|_| {
-        io::Error::new(io::ErrorKind::NotFound, "not inside a muxi session")
-    })?;
-    println!("Session: {session}");
-    if let Ok(socket) = env::var("MUXI_SOCKET") {
-        println!("Socket: {socket}");
+fn cmd_info(args: &InfoArgs) -> io::Result<()> {
+    let session = env::var("MUXI_SESSION")
+        .map_err(|_| io::Error::new(io::ErrorKind::NotFound, "not inside a muxi session"))?;
+    let style = Style::stdout();
+    println!("currently in the session {}", style.id(session));
+    if args.debug {
+        if let Ok(socket) = env::var("MUXI_SOCKET") {
+            println!("socket {}", style.path(socket));
+        }
     }
     Ok(())
-}
-
-fn option_value(args: &[String], name: &str) -> Option<String> {
-    args.windows(2)
-        .find(|pair| pair[0] == name)
-        .map(|pair| pair[1].clone())
 }
 
 fn read_pid(path: &str) -> Option<i32> {
@@ -831,7 +972,11 @@ fn tail_lines(path: &str, limit: usize, raw: bool) -> Vec<String> {
     let Ok(text) = fs::read_to_string(path) else {
         return Vec::new();
     };
-    let text = if raw { text } else { strip_ansi(&text).replace('\r', "") };
+    let text = if raw {
+        text
+    } else {
+        strip_ansi(&text).replace('\r', "")
+    };
     text.lines()
         .filter(|line| !line.trim().is_empty())
         .rev()

@@ -1,7 +1,6 @@
 - spawned in one dir, but switched to other issue
-- show session info highlighting
 - fix while detach detaches in all of windows
-- fix session names shitty
+- while attaching it doesn't show anything
 - some status bar on edge to know if muxi is active at a time
 - ensure will be no conflicts with people who have full tmux config already
 - commands to connect / disconnect a terminal from muxi

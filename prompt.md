@@ -1,6 +1,6 @@
 # Terminal Awareness (muxi)
 
-Your user may run agent-visible terminals through `muxi shell`. You can see local project sessions by running `muxi list` (or `muxi list --json` for structured output).
+Your user may run agent-visible terminals through `muxi`. You can see local project sessions by running `muxi list` (or `muxi list --json` for structured output).
 
 Before starting dev servers, tunnels, or any long-running processes:
 1. Run `muxi list` to check if one is already running in the current directory

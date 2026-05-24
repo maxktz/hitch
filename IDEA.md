@@ -163,7 +163,7 @@ inspection, and input forwarding.
 
 ### Rust internals
 
-- `muxi shell` creates a session registry entry, forks a PTY-backed shell, and
+- `muxi` creates a session registry entry, forks a PTY-backed shell, and
   attaches the current terminal as a client.
 - Sessions use short global numeric IDs (`1`, `2`, `3`, ...), while `muxi list`
   defaults to the current directory so local sessions stay prioritized.
@@ -201,7 +201,7 @@ inspection, and input forwarding.
 **Working well:**
 
 - ✅ Rust native CLI builds and runs as the package binary.
-- ✅ `muxi shell` starts a transparent PTY-backed shell.
+- ✅ `muxi` starts a transparent PTY-backed shell.
 - ✅ `muxi list` shows actively attached local muxi terminals.
 - ✅ `muxi list --all` shows active sessions across projects.
 - ✅ `muxi send-keys` can send commands into a live terminal.
