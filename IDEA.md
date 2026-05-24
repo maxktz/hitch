@@ -145,56 +145,49 @@ of the major agents:
 The canonical prompt lives in `prompt.md`. It instructs agents, before starting
 any dev server / tunnel / long-running process, to run `muxi list --dir .`,
 check for an existing matching process, reuse it if present, and interact with
-existing sessions via tmux directly (`send-keys`, etc.) rather than spawning
-duplicates.
+existing sessions via muxi commands (`send-keys`, `capture-pane`, etc.) rather
+than spawning duplicates.
 
 ## Architecture
 
-A small Node.js + TypeScript CLI, built with `commander` and `chalk`.
+A single Rust CLI that owns terminal proxying, session metadata, agent
+inspection, and input forwarding.
 
 | File | Responsibility |
 |------|----------------|
-| `src/index.ts` | CLI entry point. Wires up `list`, `init`, `exit` commands. |
-| `src/init.ts`  | Emits the `.zshrc` shell snippet (the tmux-wrapping guard + per-session settings). |
-| `src/tmux.ts`  | tmux interaction layer: enumerate panes, capture output, resolve full command via process tree. |
-| `src/list.ts`  | The `list` command: enrich each pane, format pretty/JSON output, time-ago formatting. |
+| `src-rs/main.rs` | Native CLI, PTY broker, attach loop, session registry, output capture, and tmux-like agent commands. |
+| `Cargo.toml` | Rust package definition and binary target. |
+| `package.json` | npm/pnpm packaging shim that builds and exposes the Rust binary. |
 | `prompt.md`    | Canonical agent prompt, copied into agent config files. |
 
-### `src/tmux.ts` internals
+### Rust internals
 
-- `getPanes()` — `tmux list-panes -a -F <fields>` pulling session_activity,
-  session_name, session_attached, pane_id, pane_current_path,
-  pane_current_command, pane_pid.
-- `getFullCommand(shellPid)` — `ps -e -o pid=,ppid=,args=` to find the child
-  process of the shell and recover the full command line with arguments.
-- `capturePaneOutput(paneId)` — `tmux capture-pane -t <id> -p -S -` for full
-  scrollback.
-
-### `src/list.ts` internals
-
-- Sorts panes by activity, most recent first.
-- `extractCommandOutput()` — finds the last prompt line (`❯`, `$`, `▶`, `%`)
-  and returns the output after it.
-- `extractLastCommand()` — pulls the command text from the last prompt line
-  (used for idle shells).
-- `enrichPane()` — combines process-tree inspection with scrollback analysis.
-- `timeAgo()` — `<60s` → "Xs ago", `<1h` → "Xm ago", `<1d` → "Xh ago",
-  else "Xd ago".
+- `muxi shell` creates a session registry entry, forks a PTY-backed shell, and
+  attaches the current terminal as a client.
+- A Unix-domain socket carries a small packet protocol for attach, detach,
+  resize, and pushed input.
+- PTY output is streamed to attached clients and appended to a session log for
+  `capture-pane` and `list`.
+- `send-keys` writes tmux-style key tokens into the session socket.
+- When the last attached terminal detaches, the session owner terminates the
+  child shell and removes the socket, so `list` only shows actively used
+  terminals.
 
 ## Design Principles (learned the hard way)
 
 1. **It must feel like a normal terminal.** If the user ever has to think "oh
-   right, I'm in tmux," the abstraction has failed. No visible tmux chrome, no
-   keybinding surprises, no lag.
+   right, I'm in muxi," the abstraction has failed. No visible chrome, no
+   keybinding surprises beyond detach, no lag.
 
-2. **Don't hijack real tmux.** Use per-session inline settings, never global
-   `~/.tmux.conf`. People who actually use tmux must be unaffected.
+2. **Don't hijack real terminal tools.** muxi should not depend on the user's
+   tmux sessions, tmux config, shell prompt, or IDE terminal settings.
 
-3. **Always provide an escape hatch.** `muxi exit` + `MUXI_DISABLED`.
+3. **Always provide an escape hatch.** `Ctrl-\` detaches and the MVP destroys
+   sessions when the last terminal detaches.
 
-4. **Agents prefer fewer flags.** A solution that requires the agent to remember
-   `-L muxi` on every tmux command was rejected — the friction defeats the
-   purpose. The tool should "just work" on the default socket.
+4. **Agents prefer familiar commands.** muxi keeps tmux-like command names such
+   as `send-keys`, `capture-pane`, `list-sessions`, and `list-panes`, but they
+   operate on muxi sessions.
 
 5. **Change one thing at a time.** The status-bar work repeatedly broke terminal
    opening. The working config must always be preserved, and changes made
@@ -204,28 +197,24 @@ A small Node.js + TypeScript CLI, built with `commander` and `chalk`.
 
 **Working well:**
 
-- ✅ Core `muxi list` — confirmed excellent with real-world multi-terminal
-  dev workflows.
-- ✅ Invisible tmux auto-wrapping via `eval "$(muxi init)"`.
-- ✅ Full-command resolution (shows `bun dev`, not `bun`).
+- ✅ Rust native CLI builds and runs as the package binary.
+- ✅ `muxi shell` starts a transparent PTY-backed shell.
+- ✅ `muxi list` shows actively attached muxi terminals.
+- ✅ `muxi send-keys` can send commands into a live terminal.
+- ✅ `muxi capture-pane` reads recent captured output.
 - ✅ Monorepo-aware `--dir` filtering.
-- ✅ Agent prompt integration for Claude Code, Codex, OpenCode.
-- ✅ `muxi exit` escape hatch.
-- ✅ Status bar badge: `● muxi` shown in green on the right.
+- ✅ Startup message shows the session id and detach key.
+- ✅ Sessions disappear when the last terminal detaches.
 
 **Open problems:**
 
-- ⚠️ The default tmux window list (`0:zsh*`) still shows on the left of the
-  status bar. Every attempt to hide it (setting `window-status-format` /
-  `window-status-current-format` to empty, via the `\;` chain, `source-file`,
-  or a second `.zshrc` pass) has broken terminal opening. A safe approach is
-  still needed.
-- ⚠️ Desired final badge: `● muxi [0]` (fold the session number in) with
-  nothing else in the bar.
+- ⚠️ `capture-pane` is log-based, not a full terminal screen reconstruction.
+- ⚠️ Captured prompt output can still contain some terminal-control leftovers.
 
 ## Future
 
 - Make the project public on npm.
-- bash support (currently zsh-focused).
-- Possibly extend agent integrations and refine the badge once the window-list
-  hiding is solved safely.
+- Improve output cleanup or add a real terminal-screen model.
+- Add stronger process/current-command detection.
+- Consider optional prompt integration later; startup message and `muxi info`
+  are enough for the MVP.

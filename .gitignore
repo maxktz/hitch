@@ -1,8 +1,3 @@
 node_modules
 dist
-native/muxi-pty/Makefile
-native/muxi-pty/*.o
-native/muxi-pty/muxi-pty
-native/muxi-pty/config.h
-native/muxi-pty/config.log
-native/muxi-pty/config.status
+target
