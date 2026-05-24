@@ -16,6 +16,7 @@ const MSG_PUSH: u8 = 0;
 const MSG_ATTACH: u8 = 1;
 const MSG_DETACH: u8 = 2;
 const MSG_WINCH: u8 = 3;
+const MSG_DETACH_SESSION: u8 = 4;
 
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
@@ -30,7 +31,12 @@ struct Style {
 }
 
 #[derive(Parser)]
-#[command(name = "hitch", version, allow_external_subcommands = true)]
+#[command(
+    name = "hitch",
+    version,
+    allow_external_subcommands = true,
+    after_help = "Aliases:\n  attach         alias for join\n  detach         alias for leave\n  list-sessions  alias for list\n  list-panes     alias for list"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -40,15 +46,21 @@ struct Cli {
 enum Commands {
     New,
     List(ListArgs),
+    #[command(hide = true)]
     ListSessions(ListArgs),
+    #[command(hide = true)]
     ListPanes(ListArgs),
+    Join(SessionArg),
+    Leave,
+    #[command(hide = true)]
     Attach(SessionArg),
+    #[command(hide = true)]
+    Detach,
     SendKeys(SendKeysArgs),
     CapturePane(CapturePaneArgs),
     KillSession(SessionArg),
     Info(InfoArgs),
     Init,
-    Exit,
     #[command(external_subcommand)]
     External(Vec<OsString>),
 }
@@ -346,7 +358,7 @@ fn run() -> io::Result<()> {
             Commands::List(args) | Commands::ListSessions(args) | Commands::ListPanes(args) => {
                 cmd_list(&args)
             }
-            Commands::Attach(args) => cmd_attach(Some(&args.session)),
+            Commands::Join(args) | Commands::Attach(args) => cmd_attach(Some(&args.session)),
             Commands::SendKeys(args) => cmd_send_keys(&args),
             Commands::CapturePane(args) => cmd_capture_pane(&args),
             Commands::KillSession(args) => cmd_kill_session(Some(&args.session)),
@@ -357,11 +369,7 @@ fn run() -> io::Result<()> {
                 println!("# Run \"hitch\" when you want a terminal to be visible to agents.");
                 Ok(())
             }
-            Commands::Exit => {
-                let style = Style::stdout();
-                println!("{} detach with {}", style.brand(), style.command("Ctrl-\\"));
-                Ok(())
-            }
+            Commands::Leave | Commands::Detach => cmd_detach(),
             Commands::External(args) => cmd_external(args),
         };
     }
@@ -606,6 +614,13 @@ fn master_loop(listener: UnixListener, record: &SessionRecord, shell: &str) -> i
             let fd = clients[i].stream.as_raw_fd();
             if unsafe { libc::FD_ISSET(fd, &readfds) } {
                 match read_packet(&mut clients[i].stream) {
+                    Ok(Some(packet)) if packet.typ == MSG_DETACH_SESSION => {
+                        for client in &mut clients {
+                            client.attached = false;
+                        }
+                        i += 1;
+                        continue;
+                    }
                     Ok(Some(packet)) => {
                         handle_packet(pty_fd, &mut clients[i], packet, &mut commands)?
                     }
@@ -1061,7 +1076,7 @@ fn cmd_attach(id: Option<&str>) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             format!(
-                "already inside hitch session {}; detach first with {}",
+                "already inside hitch session {}; leave first with {}",
                 style.id(session),
                 style.command("Ctrl-\\")
             ),
@@ -1134,6 +1149,20 @@ fn cmd_kill_session(id: Option<&str>) -> io::Result<()> {
     }
     let _ = fs::remove_dir_all(session_path(&session.id));
     Ok(())
+}
+
+fn cmd_detach() -> io::Result<()> {
+    let style = Style::stdout();
+    let Ok(socket) = env::var("HITCH_SOCKET") else {
+        println!(
+            "not inside a hitch session, run `{}` to join",
+            style.brand()
+        );
+        return Ok(());
+    };
+
+    let mut stream = UnixStream::connect(socket)?;
+    send_packet(&mut stream, MSG_DETACH_SESSION, &[])
 }
 
 fn cmd_info(args: &InfoArgs) -> io::Result<()> {

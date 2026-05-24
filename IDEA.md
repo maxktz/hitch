@@ -99,7 +99,7 @@ The per-session settings make tmux feel like a plain terminal:
 ### 2. The escape hatch
 
 Sometimes you genuinely want a raw terminal — to use your native terminal
-features, or to launch your own custom tmux setup. `hitch exit` handles this:
+features, or to launch your own custom tmux setup. `hitch leave` handles this:
 
 ```sh
 tmux detach -E "HITCH_DISABLED=1 zsh"
@@ -156,7 +156,7 @@ inspection, and input forwarding.
 
 | File | Responsibility |
 |------|----------------|
-| `src-rs/main.rs` | Native CLI, PTY broker, attach loop, session registry, output capture, and tmux-like agent commands. |
+| `src-rs/main.rs` | Native CLI, PTY broker, join loop, session registry, output capture, and tmux-like agent commands. |
 | `Cargo.toml` | Rust package definition and binary target. |
 | `prompt.md`    | Canonical agent prompt, copied into agent config files. |
 
@@ -166,7 +166,7 @@ inspection, and input forwarding.
   attaches the current terminal as a client.
 - Sessions use short global numeric IDs (`1`, `2`, `3`, ...), while `hitch list`
   defaults to the current directory so local sessions stay prioritized.
-- A Unix-domain socket carries a small packet protocol for attach, detach,
+- A Unix-domain socket carries a small packet protocol for join, leave,
   resize, and pushed input.
 - PTY output is streamed to attached clients and appended to a session log for
   `capture-pane` and `list`.
@@ -206,7 +206,7 @@ inspection, and input forwarding.
 - ✅ `hitch send-keys` can send commands into a live terminal.
 - ✅ `hitch capture-pane` reads recent captured output.
 - ✅ Monorepo-aware `--dir` filtering.
-- ✅ Startup message shows the session id and detach key.
+- ✅ Startup message shows the session id and leave key.
 - ✅ Sessions disappear when the last terminal detaches.
 
 **Open problems:**
