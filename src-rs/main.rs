@@ -23,6 +23,7 @@ const DIM: &str = "\x1b[2m";
 const GREEN: &str = "\x1b[32m";
 const RED: &str = "\x1b[31m";
 const ATTACH_HISTORY_BYTES: u64 = 64 * 1024;
+const ACTIVE_COMMAND_HEAD_LINES: usize = 5;
 
 struct Style {
     enabled: bool,
@@ -60,7 +61,7 @@ struct ListArgs {
     json: bool,
     #[arg(long)]
     dir: Option<PathBuf>,
-    #[arg(long, default_value_t = 5)]
+    #[arg(long, default_value_t = 20)]
     tail: usize,
 }
 
@@ -127,10 +128,6 @@ impl Style {
         self.paint(value, &[GREEN])
     }
 
-    fn label(&self, value: impl AsRef<str>) -> String {
-        self.paint(value, &[DIM])
-    }
-
     fn path(&self, value: impl AsRef<str>) -> String {
         value.as_ref().to_string()
     }
@@ -141,10 +138,6 @@ impl Style {
 
     fn muted(&self, value: impl AsRef<str>) -> String {
         self.paint(value, &[DIM])
-    }
-
-    fn success(&self, value: impl AsRef<str>) -> String {
-        value.as_ref().to_string()
     }
 
     fn error(&self, value: impl AsRef<str>) -> String {
@@ -167,6 +160,24 @@ struct SessionRecord {
     shell: String,
 }
 
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct SessionState {
+    #[serde(rename = "activeCommand")]
+    active_command: Option<String>,
+    #[serde(rename = "commandRunning")]
+    command_running: bool,
+    #[serde(rename = "commandStartedAt")]
+    command_started_at: Option<u64>,
+    #[serde(rename = "commandFinishedAt")]
+    command_finished_at: Option<u64>,
+    #[serde(rename = "lastActivityAt")]
+    last_activity_at: Option<u64>,
+    #[serde(rename = "foregroundPgrp")]
+    foreground_pgrp: Option<i32>,
+    #[serde(rename = "currentDir")]
+    current_dir: Option<String>,
+}
+
 struct Packet {
     typ: u8,
     len: u8,
@@ -176,6 +187,84 @@ struct Packet {
 struct Client {
     stream: UnixStream,
     attached: bool,
+}
+
+struct CommandTracker {
+    state: SessionState,
+    path: PathBuf,
+    output_path: PathBuf,
+    shell_pid: libc::pid_t,
+    current_pgrp: Option<i32>,
+}
+
+impl CommandTracker {
+    fn new(record: &SessionRecord, shell_pid: libc::pid_t) -> Self {
+        let state = read_session_state(&record.id);
+        Self {
+            state,
+            path: session_path(&record.id).join("state.json"),
+            output_path: active_output_path(&record.id),
+            shell_pid,
+            current_pgrp: None,
+        }
+    }
+
+    fn note_input(&mut self) {
+        self.state.last_activity_at = Some(now_epoch());
+        self.save();
+    }
+
+    fn refresh(&mut self, pty_fd: RawFd) {
+        let now = now_epoch();
+        let fg = foreground_pgrp(pty_fd);
+        self.state.foreground_pgrp = fg;
+
+        let Some(pgrp) = fg else {
+            self.save();
+            return;
+        };
+
+        let shell_pgrp = self.shell_pid as i32;
+        if pgrp != shell_pgrp {
+            if self.current_pgrp != Some(pgrp) {
+                self.current_pgrp = Some(pgrp);
+                self.state.active_command = command_for_pgrp(pgrp);
+                self.state.command_started_at = Some(now);
+                self.state.command_finished_at = None;
+                let _ = fs::write(&self.output_path, "");
+            }
+            self.state.command_running = true;
+            self.state.current_dir = cwd_for_pgrp(pgrp);
+        } else {
+            self.state.active_command = None;
+            self.state.command_running = false;
+            if self.current_pgrp.is_some() {
+                self.state.command_finished_at = Some(now);
+            }
+            self.current_pgrp = None;
+        }
+
+        self.save();
+    }
+
+    fn capture_output(&self, bytes: &[u8]) {
+        if !self.state.command_running {
+            return;
+        }
+        if let Ok(mut file) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.output_path)
+        {
+            let _ = file.write_all(bytes);
+        }
+    }
+
+    fn save(&self) {
+        if let Ok(raw) = serde_json::to_string_pretty(&self.state) {
+            let _ = fs::write(&self.path, raw);
+        }
+    }
 }
 
 #[derive(Default)]
@@ -436,6 +525,7 @@ fn master_loop(listener: UnixListener, record: &SessionRecord, shell: &str) -> i
         .open(&record.log)?;
     let mut clients: Vec<Client> = Vec::new();
     let mut filter = TitleFilter::default();
+    let mut commands = CommandTracker::new(record, child_pid);
     let mut had_attached = false;
 
     loop {
@@ -452,13 +542,17 @@ fn master_loop(listener: UnixListener, record: &SessionRecord, shell: &str) -> i
             max_fd = max_fd.max(fd);
         }
 
+        let mut timeout = libc::timeval {
+            tv_sec: 1,
+            tv_usec: 0,
+        };
         let rc = unsafe {
             libc::select(
                 max_fd + 1,
                 &mut readfds,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
-                std::ptr::null_mut(),
+                &mut timeout,
             )
         };
         if rc < 0 {
@@ -467,6 +561,10 @@ fn master_loop(listener: UnixListener, record: &SessionRecord, shell: &str) -> i
                 continue;
             }
             return Err(err);
+        }
+        if rc == 0 {
+            commands.refresh(pty_fd);
+            continue;
         }
 
         if unsafe { libc::FD_ISSET(listener.as_raw_fd(), &readfds) } {
@@ -484,6 +582,7 @@ fn master_loop(listener: UnixListener, record: &SessionRecord, shell: &str) -> i
         }
 
         if unsafe { libc::FD_ISSET(pty_fd, &readfds) } {
+            commands.refresh(pty_fd);
             let mut buf = [0u8; BUF_SIZE];
             let len = unsafe { libc::read(pty_fd, buf.as_mut_ptr().cast(), buf.len()) };
             if len <= 0 {
@@ -492,6 +591,7 @@ fn master_loop(listener: UnixListener, record: &SessionRecord, shell: &str) -> i
             let filtered = filter.filter(&buf[..len as usize]);
             if !filtered.is_empty() {
                 let _ = log.write_all(&filtered);
+                commands.capture_output(&filtered);
                 clients.retain_mut(|client| {
                     if !client.attached {
                         return true;
@@ -506,7 +606,9 @@ fn master_loop(listener: UnixListener, record: &SessionRecord, shell: &str) -> i
             let fd = clients[i].stream.as_raw_fd();
             if unsafe { libc::FD_ISSET(fd, &readfds) } {
                 match read_packet(&mut clients[i].stream) {
-                    Ok(Some(packet)) => handle_packet(pty_fd, &mut clients[i], packet)?,
+                    Ok(Some(packet)) => {
+                        handle_packet(pty_fd, &mut clients[i], packet, &mut commands)?
+                    }
                     Ok(None) => {
                         clients.remove(i);
                         continue;
@@ -566,11 +668,18 @@ fn fork_shell(shell: &str, record: &SessionRecord) -> io::Result<(RawFd, libc::p
     Ok((master, pid))
 }
 
-fn handle_packet(pty_fd: RawFd, client: &mut Client, packet: Packet) -> io::Result<()> {
+fn handle_packet(
+    pty_fd: RawFd,
+    client: &mut Client,
+    packet: Packet,
+    commands: &mut CommandTracker,
+) -> io::Result<()> {
     match packet.typ {
         MSG_PUSH => {
             let len = packet.len as usize;
-            write_all_fd(pty_fd, &packet.buf[..len])?;
+            let bytes = &packet.buf[..len];
+            commands.note_input();
+            write_all_fd(pty_fd, bytes)?;
         }
         MSG_ATTACH => client.attached = true,
         MSG_DETACH => client.attached = false,
@@ -807,7 +916,7 @@ fn cmd_list(args: &ListArgs) -> io::Result<()> {
     if args.json {
         let values = sessions
             .iter()
-            .map(|s| session_json(s, args.tail))
+            .map(|s| session_json(s, args))
             .collect::<Vec<_>>();
         println!("{}", serde_json::to_string_pretty(&values).unwrap());
         return Ok(());
@@ -821,36 +930,53 @@ fn cmd_list(args: &ListArgs) -> io::Result<()> {
 
     let style = Style::stdout();
     for session in sessions {
+        let state = read_session_state(&session.id);
+        let attached = is_attached(&session.socket);
+        let command = state
+            .active_command
+            .as_deref()
+            .filter(|command| !command.is_empty())
+            .unwrap_or("idle shell");
+        let cwd = current_dir_for_session(&session, &state);
+        let activity = state
+            .last_activity_at
+            .map(time_ago)
+            .unwrap_or_else(|| "unknown".to_string());
+
+        println!("----- session {} -----", style.id(&session.id));
+        println!("current dir: {}", style.path(shorten_home(&cwd)));
+        println!("active command: {}", style.command(command));
         println!(
-            "{} {} {}",
-            style.muted("session"),
-            style.id(&session.id),
-            style.muted("─".repeat(32))
-        );
-        println!("{} {}", style.label("dir"), style.path(&session.cwd));
-        println!(
-            "{} {}",
-            style.label("cmd"),
-            style.command(command_for_session(&session))
-        );
-        println!("{} {}", style.label("status"), style.success("running"));
-        println!(
-            "{} {}",
-            style.label("attached"),
-            if is_attached(&session.socket) {
-                style.success("yes")
+            "session last active {} ({})",
+            activity,
+            if attached {
+                "currently attached"
             } else {
-                style.muted("no")
+                "not attached"
             }
         );
-        let lines = tail_lines(&session.log, args.tail, false);
-        if !lines.is_empty() {
-            println!(
-                "\n{}",
-                style.muted(format!("output tail ({} lines)", lines.len()))
+
+        if state.command_running {
+            let head = head_lines_path(
+                &active_output_path(&session.id),
+                ACTIVE_COMMAND_HEAD_LINES,
+                false,
             );
-            for line in lines {
-                println!("  {}", style.muted(line));
+            if !head.is_empty() {
+                println!();
+                println!("--- active command output head ({} lines) ---", head.len());
+                for line in head {
+                    println!("{line}");
+                }
+            }
+        }
+
+        let tail = tail_lines_path(&session.log, args.tail, false);
+        if !tail.is_empty() {
+            println!();
+            println!("--- recent output ({} lines) ---", tail.len());
+            for line in tail {
+                println!("{line}");
             }
         }
         println!();
@@ -883,16 +1009,25 @@ fn read_sessions() -> io::Result<Vec<SessionRecord>> {
     Ok(records)
 }
 
-fn session_json(session: &SessionRecord, tail: usize) -> serde_json::Value {
+fn session_json(session: &SessionRecord, args: &ListArgs) -> serde_json::Value {
+    let state = read_session_state(&session.id);
     serde_json::json!({
         "session": session.id,
-        "dir": session.cwd,
-        "latestCommand": command_for_session(session),
+        "dir": current_dir_for_session(session, &state),
+        "activeCommand": state.active_command,
+        "commandRunning": state.command_running,
         "running": Path::new(&session.socket).exists(),
         "attached": is_attached(&session.socket),
         "pid": read_pid(&session.pid_file),
-        "lastActivity": "now",
-        "output": { "tail": tail_lines(&session.log, tail, false) }
+        "lastActivity": state.last_activity_at.map(time_ago),
+        "output": {
+            "activeHead": if state.command_running {
+                head_lines_path(&active_output_path(&session.id), ACTIVE_COMMAND_HEAD_LINES, false)
+            } else {
+                Vec::new()
+            },
+            "tail": tail_lines_path(&session.log, args.tail, false)
+        }
     })
 }
 
@@ -1036,30 +1171,72 @@ impl PermissionsExt for fs::Permissions {
     }
 }
 
-fn command_for_session(session: &SessionRecord) -> String {
-    if let Some(pid) = read_pid(&session.pid_file) {
-        if let Ok(output) = Command::new("ps")
-            .args(["-p", &pid.to_string(), "-o", "command="])
-            .output()
-        {
-            let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !text.is_empty() {
-                return text;
-            }
-        }
-    }
-    session.shell.clone()
+fn read_session_state(id: &str) -> SessionState {
+    let path = session_path(id).join("state.json");
+    let Ok(raw) = fs::read_to_string(path) else {
+        return SessionState::default();
+    };
+    serde_json::from_str(&raw).unwrap_or_default()
 }
 
-fn tail_lines(path: &str, limit: usize, raw: bool) -> Vec<String> {
+fn active_output_path(id: &str) -> PathBuf {
+    session_path(id).join("active-output.log")
+}
+
+fn current_dir_for_session(session: &SessionRecord, state: &SessionState) -> String {
+    state
+        .foreground_pgrp
+        .and_then(cwd_for_pgrp)
+        .or_else(|| state.current_dir.clone())
+        .unwrap_or_else(|| session.cwd.clone())
+}
+
+fn shorten_home(path: &str) -> String {
+    let Some(home) = env::var_os("HOME").map(PathBuf::from) else {
+        return path.to_string();
+    };
+    let path_buf = Path::new(path);
+    if let Ok(stripped) = path_buf.strip_prefix(&home) {
+        if stripped.as_os_str().is_empty() {
+            "~".to_string()
+        } else {
+            format!("~/{}", stripped.to_string_lossy())
+        }
+    } else {
+        path.to_string()
+    }
+}
+
+fn time_ago(timestamp: u64) -> String {
+    let elapsed = now_epoch().saturating_sub(timestamp);
+    if elapsed < 60 {
+        format!("{elapsed}s ago")
+    } else if elapsed < 60 * 60 {
+        format!("{}m ago", elapsed / 60)
+    } else if elapsed < 60 * 60 * 24 {
+        format!("{}h ago", elapsed / 60 / 60)
+    } else {
+        format!("{}d ago", elapsed / 60 / 60 / 24)
+    }
+}
+
+fn head_lines_path(path: &Path, limit: usize, raw: bool) -> Vec<String> {
     let Ok(text) = fs::read_to_string(path) else {
         return Vec::new();
     };
-    let text = if raw {
-        text
-    } else {
-        strip_ansi(&text).replace('\r', "")
+    let text = if raw { text } else { clean_list_output(&text) };
+    text.lines()
+        .filter(|line| !line.trim().is_empty())
+        .take(limit)
+        .map(str::to_string)
+        .collect()
+}
+
+fn tail_lines_path(path: &str, limit: usize, raw: bool) -> Vec<String> {
+    let Ok(text) = fs::read_to_string(path) else {
+        return Vec::new();
     };
+    let text = if raw { text } else { clean_list_output(&text) };
     text.lines()
         .filter(|line| !line.trim().is_empty())
         .rev()
@@ -1068,6 +1245,250 @@ fn tail_lines(path: &str, limit: usize, raw: bool) -> Vec<String> {
         .collect::<Vec<_>>()
         .into_iter()
         .rev()
+        .collect()
+}
+
+fn clean_list_output(value: &str) -> String {
+    render_terminal_text(value.as_bytes())
+}
+
+fn foreground_pgrp(fd: RawFd) -> Option<i32> {
+    let pgrp = unsafe { libc::tcgetpgrp(fd) };
+    if pgrp > 0 { Some(pgrp as i32) } else { None }
+}
+
+fn command_for_pgrp(pgrp: i32) -> Option<String> {
+    let output = Command::new("ps")
+        .args(["-p", &pgrp.to_string(), "-o", "command="])
+        .output()
+        .ok()?;
+    let command = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if command.is_empty() {
+        None
+    } else {
+        Some(command)
+    }
+}
+
+fn cwd_for_pgrp(pgrp: i32) -> Option<String> {
+    let output = Command::new("lsof")
+        .args(["-a", "-p", &pgrp.to_string(), "-d", "cwd", "-Fn"])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.lines()
+        .find_map(|line| line.strip_prefix('n').map(str::to_string))
+        .filter(|path| !path.is_empty())
+}
+
+struct TextTerminal {
+    rows: Vec<Vec<char>>,
+    row: usize,
+    col: usize,
+    saved: Option<(usize, usize)>,
+}
+
+impl TextTerminal {
+    fn new() -> Self {
+        Self {
+            rows: vec![Vec::new()],
+            row: 0,
+            col: 0,
+            saved: None,
+        }
+    }
+
+    fn ensure_row(&mut self) {
+        while self.row >= self.rows.len() {
+            self.rows.push(Vec::new());
+        }
+    }
+
+    fn put(&mut self, ch: char) {
+        self.ensure_row();
+        let line = &mut self.rows[self.row];
+        while self.col > line.len() {
+            line.push(' ');
+        }
+        if self.col == line.len() {
+            line.push(ch);
+        } else {
+            line[self.col] = ch;
+        }
+        self.col += 1;
+    }
+
+    fn newline(&mut self) {
+        self.row += 1;
+        self.col = 0;
+        self.ensure_row();
+    }
+
+    fn clear_line_from_cursor(&mut self) {
+        self.ensure_row();
+        self.rows[self.row].truncate(self.col);
+    }
+
+    fn clear_line_to_cursor(&mut self) {
+        self.ensure_row();
+        let line = &mut self.rows[self.row];
+        let end = self.col.min(line.len());
+        for ch in &mut line[..end] {
+            *ch = ' ';
+        }
+    }
+
+    fn clear_line(&mut self) {
+        self.ensure_row();
+        self.rows[self.row].clear();
+        self.col = 0;
+    }
+
+    fn clear_screen_from_cursor(&mut self) {
+        self.clear_line_from_cursor();
+        self.rows.truncate(self.row + 1);
+    }
+
+    fn finish(self) -> String {
+        self.rows
+            .into_iter()
+            .map(|line| line.into_iter().collect::<String>().trim_end().to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+fn render_terminal_text(bytes: &[u8]) -> String {
+    let mut term = TextTerminal::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\r' => {
+                term.col = 0;
+                i += 1;
+            }
+            b'\n' => {
+                term.newline();
+                i += 1;
+            }
+            0x08 => {
+                term.col = term.col.saturating_sub(1);
+                i += 1;
+            }
+            b'\t' => {
+                let spaces = 8 - (term.col % 8);
+                for _ in 0..spaces {
+                    term.put(' ');
+                }
+                i += 1;
+            }
+            0x1b => {
+                i = apply_escape(bytes, i, &mut term);
+            }
+            byte if byte >= 0x20 => {
+                if let Ok(text) = std::str::from_utf8(&bytes[i..]) {
+                    if let Some(ch) = text.chars().next() {
+                        term.put(ch);
+                        i += ch.len_utf8();
+                    } else {
+                        i += 1;
+                    }
+                } else {
+                    term.put(byte as char);
+                    i += 1;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    term.finish()
+}
+
+fn apply_escape(bytes: &[u8], mut i: usize, term: &mut TextTerminal) -> usize {
+    i += 1;
+    if i >= bytes.len() {
+        return i;
+    }
+
+    match bytes[i] {
+        b']' => skip_osc(bytes, i + 1),
+        b'7' => {
+            term.saved = Some((term.row, term.col));
+            i + 1
+        }
+        b'8' => {
+            if let Some((row, col)) = term.saved {
+                term.row = row;
+                term.col = col;
+                term.ensure_row();
+            }
+            i + 1
+        }
+        b'[' => apply_csi(bytes, i + 1, term),
+        _ => i + 1,
+    }
+}
+
+fn skip_osc(bytes: &[u8], mut i: usize) -> usize {
+    while i < bytes.len() {
+        if bytes[i] == 0x07 {
+            return i + 1;
+        }
+        if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'\\' {
+            return i + 2;
+        }
+        i += 1;
+    }
+    i
+}
+
+fn apply_csi(bytes: &[u8], mut i: usize, term: &mut TextTerminal) -> usize {
+    let start = i;
+    while i < bytes.len() && !(0x40..=0x7e).contains(&bytes[i]) {
+        i += 1;
+    }
+    if i >= bytes.len() {
+        return i;
+    }
+
+    let final_byte = bytes[i];
+    let params = parse_csi_params(&bytes[start..i]);
+    let n = params.first().copied().unwrap_or(1).max(1) as usize;
+    match final_byte {
+        b'A' => term.row = term.row.saturating_sub(n),
+        b'B' => {
+            term.row += n;
+            term.ensure_row();
+        }
+        b'C' => term.col += n,
+        b'D' => term.col = term.col.saturating_sub(n),
+        b'G' => term.col = n.saturating_sub(1),
+        b'H' | b'f' => {
+            term.row = params.first().copied().unwrap_or(1).saturating_sub(1) as usize;
+            term.col = params.get(1).copied().unwrap_or(1).saturating_sub(1) as usize;
+            term.ensure_row();
+        }
+        b'J' => {
+            if params.first().copied().unwrap_or(0) == 0 {
+                term.clear_screen_from_cursor();
+            }
+        }
+        b'K' => match params.first().copied().unwrap_or(0) {
+            0 => term.clear_line_from_cursor(),
+            1 => term.clear_line_to_cursor(),
+            2 => term.clear_line(),
+            _ => {}
+        },
+        _ => {}
+    }
+    i + 1
+}
+
+fn parse_csi_params(bytes: &[u8]) -> Vec<u16> {
+    let text = String::from_utf8_lossy(bytes);
+    text.trim_start_matches('?')
+        .split(';')
+        .filter_map(|part| part.parse::<u16>().ok())
         .collect()
 }
 
