@@ -1,9 +1,9 @@
-- spawned in one dir, but switched to other issue
-- fix while detach detaches in all of windows
-- while attaching it doesn't show anything
-- some status bar on edge to know if hitch is active at a time
-- ensure will be no conflicts with people who have full tmux config already
-- commands to join / leave a terminal from hitch
 - proper installation commands
+  - global install
+- make head / tail outputs deduplicate in case they show same things
+- some status bar / prompt on edge to know if hitch is active at a time
 
-- enable/disable auto-wrap for specific repo or specific app, like vscode or etc
+- config commands - enable/disable auto join for specific repo or specific app, like auto join hitch in all vscode terminals, or zed, etc
+
+- parse commands history in sessions (hard, requires shell wrapper integration)
+- switch with join command, instead of error (while already in session)
