@@ -966,9 +966,11 @@ fn cmd_kill_session(id: Option<&str>) -> io::Result<()> {
 }
 
 fn cmd_info(args: &InfoArgs) -> io::Result<()> {
-    let session = env::var("MUXI_SESSION")
-        .map_err(|_| io::Error::new(io::ErrorKind::NotFound, "not inside a muxi session"))?;
     let style = Style::stdout();
+    let Ok(session) = env::var("MUXI_SESSION") else {
+        println!("not inside a muxi session, run `{}` to join", style.brand());
+        return Ok(());
+    };
     println!("currently in the session {}", style.id(session));
     if args.debug {
         if let Ok(socket) = env::var("MUXI_SOCKET") {
