@@ -6,11 +6,19 @@ import {
   getPanes,
   getFullCommand,
   capturePaneOutput,
+  type Pane,
 } from "./tmux.js";
+
+interface ListOptions {
+  dir?: string;
+  json?: boolean;
+  head: string;
+  tail: string;
+}
 
 const SHELLS = new Set(["zsh", "bash", "fish", "sh", "dash"]);
 
-function timeAgo(epochSeconds) {
+function timeAgo(epochSeconds: number): string {
   const diff = Math.floor(Date.now() / 1000) - epochSeconds;
   if (diff < 60) return `${diff}s ago`;
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
@@ -18,14 +26,13 @@ function timeAgo(epochSeconds) {
   return `${Math.floor(diff / 86400)}d ago`;
 }
 
-function shortenHome(p) {
+function shortenHome(p: string): string {
   const home = homedir();
   return p.startsWith(home) ? "~" + p.slice(home.length) : p;
 }
 
-function extractCommandOutput(rawOutput) {
+function extractCommandOutput(rawOutput: string): string[] {
   const lines = rawOutput.split("\n");
-
   const promptPatterns = [/❯\s/, /\$\s/, /▶\s/, /%\s/];
 
   let lastPromptIndex = -1;
@@ -41,30 +48,108 @@ function extractCommandOutput(rawOutput) {
     return lines.filter((l) => l.trim());
   }
 
-  // include the prompt+command line, then the output after it
   return lines.slice(lastPromptIndex).filter((l) => l.trim());
 }
 
-function extractLastCommand(rawOutput) {
+function extractLastCommand(rawOutput: string): string | null {
   const lines = rawOutput.split("\n");
   const promptPatterns = [
-    { re: /❯\s+(.+)/, group: 1 },
-    { re: /\$\s+(.+)/, group: 1 },
-    { re: /▶\s+(.+)/, group: 1 },
-    { re: /%\s+(.+)/, group: 1 },
+    /❯\s+(.+)/,
+    /\$\s+(.+)/,
+    /▶\s+(.+)/,
+    /%\s+(.+)/,
   ];
 
   for (let i = lines.length - 1; i >= 0; i--) {
     if (!lines[i].trim()) continue;
-    for (const { re, group } of promptPatterns) {
+    for (const re of promptPatterns) {
       const m = lines[i].match(re);
-      if (m) return m[group].trim();
+      if (m) return m[1].trim();
     }
   }
   return null;
 }
 
-export function listSessions(options) {
+interface EnrichedPane extends Pane {
+  isIdle: boolean;
+  outputLines: string[];
+}
+
+function enrichPane(pane: Pane): EnrichedPane {
+  const isIdle = SHELLS.has(pane.command);
+  const rawOutput = capturePaneOutput(pane.paneId);
+  const outputLines = extractCommandOutput(rawOutput);
+
+  let command: string;
+  if (isIdle) {
+    command = extractLastCommand(rawOutput) || "none";
+  } else {
+    command = getFullCommand(pane.pid) || pane.command;
+  }
+
+  return { ...pane, isIdle, command, outputLines };
+}
+
+function printJSON(panes: Pane[], headN: number, tailN: number) {
+  const results = panes.map((pane) => {
+    const p = enrichPane(pane);
+    return {
+      session: p.session,
+      dir: p.path,
+      latestCommand: p.command,
+      running: !p.isIdle,
+      attached: p.attached,
+      lastActivity: timeAgo(p.activity),
+      output: {
+        head: p.outputLines.slice(0, headN),
+        tail: p.outputLines.slice(-tailN),
+      },
+    };
+  });
+  console.log(JSON.stringify(results, null, 2));
+}
+
+function printPretty(panes: Pane[], headN: number, tailN: number) {
+  for (const pane of panes) {
+    const p = enrichPane(pane);
+    const attachedTag = p.attached ? " (human watching)" : "";
+
+    console.log(
+      chalk.dim(`── Session ${p.session}${attachedTag} ${"─".repeat(30)}`)
+    );
+    console.log(`Dir: ${shortenHome(p.path)}`);
+    console.log(`Latest command: ${p.command}`);
+
+    if (p.isIdle) {
+      console.log("Command finished");
+    } else {
+      console.log("Command currently running");
+    }
+    console.log(`Session active ${timeAgo(p.activity)}`);
+
+    if (p.outputLines.length > 0) {
+      console.log("");
+      const total = p.outputLines.length;
+      if (total <= headN + tailN) {
+        console.log(chalk.dim("--- last command output ---"));
+        p.outputLines.forEach((l) => console.log(`  ${l}`));
+      } else {
+        console.log(
+          chalk.dim(`--- last command output (first ${headN} lines) ---`)
+        );
+        p.outputLines.slice(0, headN).forEach((l) => console.log(`  ${l}`));
+        console.log(
+          chalk.dim(`--- last command output (last ${tailN} lines) ---`)
+        );
+        p.outputLines.slice(-tailN).forEach((l) => console.log(`  ${l}`));
+      }
+    }
+
+    console.log("");
+  }
+}
+
+export function listSessions(options: ListOptions) {
   if (!isTmuxRunning()) {
     console.log(options.json ? "[]" : "No tmux sessions running.");
     return;
@@ -95,83 +180,5 @@ export function listSessions(options) {
     printJSON(panes, headN, tailN);
   } else {
     printPretty(panes, headN, tailN);
-  }
-}
-
-function enrichPane(pane) {
-  const isIdle = SHELLS.has(pane.command);
-  const rawOutput = capturePaneOutput(pane.paneId);
-  const outputLines = extractCommandOutput(rawOutput);
-
-  let command;
-  if (isIdle) {
-    command = extractLastCommand(rawOutput) || "none";
-  } else {
-    command = getFullCommand(pane.pid) || pane.command;
-  }
-
-  return { ...pane, isIdle, command, outputLines };
-}
-
-function printJSON(panes, headN, tailN) {
-  const results = panes.map((pane) => {
-    const p = enrichPane(pane);
-    return {
-      session: p.session,
-      dir: p.path,
-      latestCommand: p.command,
-      running: !p.isIdle,
-      attached: p.attached,
-      lastActivity: timeAgo(p.activity),
-      output: {
-        head: p.outputLines.slice(0, headN),
-        tail: p.outputLines.slice(-tailN),
-      },
-    };
-  });
-  console.log(JSON.stringify(results, null, 2));
-}
-
-function printPretty(panes, headN, tailN) {
-  for (const pane of panes) {
-    const p = enrichPane(pane);
-    const attachedTag = p.attached ? " (human watching)" : "";
-
-    console.log(
-      chalk.dim(`── Session ${p.session}${attachedTag} ${"─".repeat(30)}`)
-    );
-    console.log(`Dir: ${shortenHome(p.path)}`);
-    console.log(`Latest command: ${p.command}`);
-
-    if (p.isIdle) {
-      console.log("Command finished");
-    } else {
-      console.log("Command currently running");
-    }
-    console.log(`Session active ${timeAgo(p.activity)}`);
-
-    if (p.outputLines.length > 0) {
-      console.log("");
-      const total = p.outputLines.length;
-      if (total <= headN + tailN) {
-        console.log(chalk.dim("--- last command output ---"));
-        p.outputLines.forEach((l) => console.log(`  ${l}`));
-      } else {
-        console.log(
-          chalk.dim(`--- last command output (first ${headN} lines) ---`)
-        );
-        p.outputLines
-          .slice(0, headN)
-          .forEach((l) => console.log(`  ${l}`));
-        console.log(
-          chalk.dim(`--- last command output (last ${tailN} lines) ---`)
-        );
-        p.outputLines
-          .slice(-tailN)
-          .forEach((l) => console.log(`  ${l}`));
-      }
-    }
-
-    console.log("");
   }
 }

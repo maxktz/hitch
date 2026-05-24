@@ -1,6 +1,16 @@
 import { execSync } from "child_process";
 
-export function isTmuxRunning() {
+export interface Pane {
+  activity: number;
+  session: string;
+  attached: boolean;
+  paneId: string;
+  path: string;
+  command: string;
+  pid: number;
+}
+
+export function isTmuxRunning(): boolean {
   try {
     execSync("tmux list-sessions", { stdio: "pipe" });
     return true;
@@ -9,7 +19,7 @@ export function isTmuxRunning() {
   }
 }
 
-export function getPanes() {
+export function getPanes(): Pane[] {
   const fields = [
     "#{session_activity}",
     "#{session_name}",
@@ -41,7 +51,7 @@ export function getPanes() {
   });
 }
 
-export function getFullCommand(shellPid) {
+export function getFullCommand(shellPid: number): string | null {
   try {
     const output = execSync("ps -e -o pid=,ppid=,args=", {
       encoding: "utf-8",
@@ -58,7 +68,7 @@ export function getFullCommand(shellPid) {
       if (cmd.includes("ps -e") || cmd.includes("agentmux")) continue;
 
       const parts = cmd.split(" ");
-      const basename = parts[0].split("/").pop();
+      const basename = parts[0].split("/").pop()!;
       return [basename, ...parts.slice(1)].join(" ");
     }
     return null;
@@ -67,7 +77,7 @@ export function getFullCommand(shellPid) {
   }
 }
 
-export function capturePaneOutput(paneId) {
+export function capturePaneOutput(paneId: string): string {
   try {
     return execSync(`tmux capture-pane -t ${paneId} -p -S -`, {
       encoding: "utf-8",
