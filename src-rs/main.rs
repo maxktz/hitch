@@ -1079,9 +1079,9 @@ fn cmd_attach(id: Option<&str>) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             format!(
-                "already inside hitch session {}; leave first with {}",
+                "can't join while already inside session {} {}",
                 style.id(session),
-                style.command("Ctrl-\\")
+                style.muted("(Ctrl-\\ to leave)")
             ),
         ));
     }
