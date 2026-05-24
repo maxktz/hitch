@@ -17,6 +17,8 @@ const MSG_ATTACH: u8 = 1;
 const MSG_DETACH: u8 = 2;
 const MSG_WINCH: u8 = 3;
 const MSG_DETACH_SESSION: u8 = 4;
+const SKILL_INSTALL_URL: &str = "https://github.com/maxktz/hitch";
+const SKILL_NAME: &str = "hitch";
 
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
@@ -63,6 +65,7 @@ enum Commands {
     #[command(hide = true)]
     Info(StatusArgs),
     Init,
+    InstallSkill,
     #[command(external_subcommand)]
     External(Vec<OsString>),
 }
@@ -371,6 +374,7 @@ fn run() -> io::Result<()> {
                 println!("# Run \"hitch\" when you want a terminal to be visible to agents.");
                 Ok(())
             }
+            Commands::InstallSkill => cmd_install_skill(),
             Commands::Leave | Commands::Detach => cmd_detach(),
             Commands::External(args) => cmd_external(args),
         };
@@ -1152,6 +1156,33 @@ fn cmd_kill_session(id: Option<&str>) -> io::Result<()> {
     }
     let _ = fs::remove_dir_all(session_path(&session.id));
     Ok(())
+}
+
+fn cmd_install_skill() -> io::Result<()> {
+    let args = [
+        "--yes",
+        "skills",
+        "add",
+        SKILL_INSTALL_URL,
+        "--skill",
+        SKILL_NAME,
+    ];
+    println!("running: npx {}", args.join(" "));
+
+    match Command::new("npx").args(args).status() {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => Err(io::Error::other(format!(
+            "skill installer exited with status {status}"
+        ))),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "npx not found. Install Node.js or run manually: npx {}",
+                args.join(" ")
+            ),
+        )),
+        Err(err) => Err(err),
+    }
 }
 
 fn cmd_detach() -> io::Result<()> {

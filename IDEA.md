@@ -44,10 +44,10 @@ Two halves:
    (with full arguments), whether it's still running or finished, how recently
    it was active, and a head/tail snippet of its output.
 
-Agents are told (via their global instruction files) to run `hitch list`
-before starting any long-running process. So instead of blindly spawning a
-duplicate dev server, the agent first looks, sees "there's already a `bun dev`
-running in this directory, last active 3s ago," and uses it.
+Agents can load the hitch skill before starting any long-running process. So
+instead of blindly spawning a duplicate dev server, the agent first looks, sees
+"there's already a `bun dev` running in this directory, last active 3s ago," and
+uses it.
 
 The result, in the user's words: *"I literally sometimes have four different
 terminals to just run a single project in development, and now my agents manage
@@ -134,20 +134,20 @@ Flags:
 
 ### 4. Telling the agents to use it
 
-The whole thing only works if agents actually *look* before they leap. So
-hitch's prompt instructions are installed into the global instruction files
-of the major agents:
+The whole thing only works if agents actually *look* before they leap. The
+canonical agent instructions live in `SKILL.md`, so agents can load hitch
+behavior only when terminal/session awareness is relevant instead of carrying
+extra global context in every task.
 
-- Claude Code → `~/.claude/CLAUDE.md`
-- Codex → `~/.codex/AGENTS.md`
-- OpenCode → `~/.config/opencode/AGENTS.md`
+The skill instructs agents, before starting any dev server / tunnel /
+long-running process, to run `hitch list`, check for an existing local matching
+process, reuse it if present, and interact with existing sessions via hitch
+commands (`send-keys`, `capture-pane`, etc.) rather than spawning duplicates.
+`hitch list --all` is available when the agent intentionally needs sessions
+from other projects.
 
-The canonical prompt lives in `prompt.md`. It instructs agents, before starting
-any dev server / tunnel / long-running process, to run `hitch list`, check for
-an existing local matching process, reuse it if present, and interact with
-existing sessions via hitch commands (`send-keys`, `capture-pane`, etc.) rather
-than spawning duplicates. `hitch list --all` is available when the agent
-intentionally needs sessions from other projects.
+Users can install the skill explicitly with `hitch install-skill`, which
+delegates to the external skills installer.
 
 ## Architecture
 
@@ -158,7 +158,7 @@ inspection, and input forwarding.
 |------|----------------|
 | `src-rs/main.rs` | Native CLI, PTY broker, join loop, session registry, output capture, and tmux-like agent commands. |
 | `Cargo.toml` | Rust package definition and binary target. |
-| `prompt.md`    | Canonical agent prompt, copied into agent config files. |
+| `SKILL.md` | Canonical agent skill for terminal/session awareness. |
 
 ### Rust internals
 
