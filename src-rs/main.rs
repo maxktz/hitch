@@ -8,7 +8,7 @@ use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{self, Command};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const BUF_SIZE: usize = 4096;
 const MSG_PUSH: u8 = 0;
@@ -156,9 +156,9 @@ fn print_help() {
     println!("Usage: muxi [command]\n");
     println!("Commands:");
     println!("  shell");
-    println!("  list [--json] [--dir <path>] [--tail <n>]");
-    println!("  list-sessions [--json] [--dir <path>] [--tail <n>]");
-    println!("  list-panes [--json] [--dir <path>] [--tail <n>]");
+    println!("  list [--all] [--json] [--dir <path>] [--tail <n>]");
+    println!("  list-sessions [--all] [--json] [--dir <path>] [--tail <n>]");
+    println!("  list-panes [--all] [--json] [--dir <path>] [--tail <n>]");
     println!("  attach <session>");
     println!("  send-keys -t <session> [keys...]");
     println!("  capture-pane -t <session> [-p] [--tail <n>] [--raw]");
@@ -189,36 +189,30 @@ fn session_path(id: &str) -> PathBuf {
     sessions_dir().join(id)
 }
 
-fn slug(value: &str) -> String {
-    let mut out = String::new();
-    for c in value.chars().flat_map(char::to_lowercase) {
-        if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-            out.push(c);
-        } else if !out.ends_with('-') {
-            out.push('-');
-        }
-    }
-    let trimmed = out.trim_matches('-');
-    if trimmed.is_empty() {
-        "session".to_string()
-    } else {
-        trimmed.chars().take(32).collect()
-    }
-}
-
 fn now_epoch() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
+        .unwrap_or_default()
         .as_secs()
 }
 
-fn session_id(cwd: &Path) -> String {
-    let base = cwd
-        .file_name()
-        .map(|s| s.to_string_lossy())
-        .unwrap_or_else(|| "session".into());
-    format!("{}-{}-{}", slug(&base), now_epoch(), process::id())
+fn next_session_id() -> io::Result<String> {
+    let mut used = read_sessions()?
+        .into_iter()
+        .filter_map(|session| session.id.parse::<u32>().ok())
+        .collect::<Vec<_>>();
+    used.sort_unstable();
+
+    let mut next = 1;
+    for id in used {
+        if id == next {
+            next += 1;
+        } else if id > next {
+            break;
+        }
+    }
+
+    Ok(next.to_string())
 }
 
 fn cmd_shell() -> io::Result<()> {
@@ -231,7 +225,7 @@ fn cmd_shell() -> io::Result<()> {
 
     ensure_state_dirs()?;
     let cwd = env::current_dir()?;
-    let id = session_id(&cwd);
+    let id = next_session_id()?;
     let dir = session_path(&id);
     fs::create_dir_all(&dir)?;
 
@@ -588,15 +582,31 @@ fn write_all_fd(fd: RawFd, mut bytes: &[u8]) -> io::Result<()> {
 
 fn cmd_list(args: &[String]) -> io::Result<()> {
     let json = args.iter().any(|a| a == "--json");
+    let show_all = args.iter().any(|a| a == "--all");
     let dir = option_value(args, "--dir").map(PathBuf::from);
     let tail = option_value(args, "--tail")
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(5);
     let mut sessions = read_sessions()?;
-    if let Some(filter) = dir {
+
+    let filter_dir = if let Some(dir) = dir {
+        Some(dir)
+    } else if show_all {
+        None
+    } else {
+        Some(env::current_dir()?)
+    };
+
+    if let Some(filter) = filter_dir {
         let filter = filter.canonicalize().unwrap_or(filter);
-        sessions.retain(|s| Path::new(&s.cwd).starts_with(&filter));
+        sessions.retain(|session| {
+            let cwd = Path::new(&session.cwd);
+            let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+            cwd.starts_with(&filter)
+        });
     }
+
+    sessions.sort_by_key(|session| session.id.parse::<u32>().unwrap_or(u32::MAX));
 
     if json {
         let values = sessions

@@ -143,10 +143,11 @@ of the major agents:
 - OpenCode → `~/.config/opencode/AGENTS.md`
 
 The canonical prompt lives in `prompt.md`. It instructs agents, before starting
-any dev server / tunnel / long-running process, to run `muxi list --dir .`,
-check for an existing matching process, reuse it if present, and interact with
+any dev server / tunnel / long-running process, to run `muxi list`, check for
+an existing local matching process, reuse it if present, and interact with
 existing sessions via muxi commands (`send-keys`, `capture-pane`, etc.) rather
-than spawning duplicates.
+than spawning duplicates. `muxi list --all` is available when the agent
+intentionally needs sessions from other projects.
 
 ## Architecture
 
@@ -164,6 +165,8 @@ inspection, and input forwarding.
 
 - `muxi shell` creates a session registry entry, forks a PTY-backed shell, and
   attaches the current terminal as a client.
+- Sessions use short global numeric IDs (`1`, `2`, `3`, ...), while `muxi list`
+  defaults to the current directory so local sessions stay prioritized.
 - A Unix-domain socket carries a small packet protocol for attach, detach,
   resize, and pushed input.
 - PTY output is streamed to attached clients and appended to a session log for
@@ -199,7 +202,8 @@ inspection, and input forwarding.
 
 - ✅ Rust native CLI builds and runs as the package binary.
 - ✅ `muxi shell` starts a transparent PTY-backed shell.
-- ✅ `muxi list` shows actively attached muxi terminals.
+- ✅ `muxi list` shows actively attached local muxi terminals.
+- ✅ `muxi list --all` shows active sessions across projects.
 - ✅ `muxi send-keys` can send commands into a live terminal.
 - ✅ `muxi capture-pane` reads recent captured output.
 - ✅ Monorepo-aware `--dir` filtering.

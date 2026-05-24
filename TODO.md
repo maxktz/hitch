@@ -1,4 +1,5 @@
-- show session info on attach
+- spawned in one dir, but switched to other issue
+- show session info highlighting
 - fix while detach detaches in all of windows
 - fix session names shitty
 - some status bar on edge to know if muxi is active at a time
