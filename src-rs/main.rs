@@ -1,4 +1,4 @@
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::ffi::{CString, OsString};
@@ -18,8 +18,10 @@ const MSG_DETACH: u8 = 2;
 const MSG_WINCH: u8 = 3;
 
 const RESET: &str = "\x1b[0m";
+const BOLD: &str = "\x1b[1m";
 const DIM: &str = "\x1b[2m";
 const GREEN: &str = "\x1b[32m";
+const RED: &str = "\x1b[31m";
 const ATTACH_HISTORY_BYTES: u64 = 64 * 1024;
 
 struct Style {
@@ -27,7 +29,7 @@ struct Style {
 }
 
 #[derive(Parser)]
-#[command(name = "muxi", version)]
+#[command(name = "muxi", version, allow_external_subcommands = true)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -46,6 +48,8 @@ enum Commands {
     Info(InfoArgs),
     Init,
     Exit,
+    #[command(external_subcommand)]
+    External(Vec<OsString>),
 }
 
 #[derive(Args)]
@@ -144,7 +148,7 @@ impl Style {
     }
 
     fn error(&self, value: impl AsRef<str>) -> String {
-        value.as_ref().to_string()
+        self.paint(value, &[RED, BOLD])
     }
 }
 
@@ -269,6 +273,7 @@ fn run() -> io::Result<()> {
                 println!("{} detach with {}", style.brand(), style.command("Ctrl-\\"));
                 Ok(())
             }
+            Commands::External(args) => cmd_external(args),
         };
     }
 
@@ -276,6 +281,37 @@ fn run() -> io::Result<()> {
         cmd_info(&InfoArgs { debug: false })
     } else {
         cmd_new()
+    }
+}
+
+fn cmd_external(args: Vec<OsString>) -> io::Result<()> {
+    let Some(session) = numeric_attach_shortcut(&args) else {
+        Cli::command()
+            .error(
+                clap::error::ErrorKind::InvalidSubcommand,
+                format!(
+                    "unrecognized subcommand '{}'",
+                    args.first()
+                        .and_then(|arg| arg.to_str())
+                        .unwrap_or("<invalid>")
+                ),
+            )
+            .exit();
+    };
+
+    cmd_attach(Some(session))
+}
+
+fn numeric_attach_shortcut(args: &[OsString]) -> Option<&str> {
+    if args.len() != 1 {
+        return None;
+    }
+
+    let value = args[0].to_str()?;
+    if value.chars().all(|ch| ch.is_ascii_digit()) {
+        Some(value)
+    } else {
+        None
     }
 }
 
@@ -875,7 +911,7 @@ fn find_session(id: Option<&str>) -> io::Result<SessionRecord> {
         1 => Ok(matches.into_iter().next().unwrap()),
         0 => Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("no such muxi session: {id}"),
+            format!("session {id} not exists"),
         )),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
