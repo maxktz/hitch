@@ -35,7 +35,7 @@ struct Style {
     name = "hitch",
     version,
     allow_external_subcommands = true,
-    after_help = "Aliases:\n  attach         alias for join\n  detach         alias for leave\n  list-sessions  alias for list\n  list-panes     alias for list"
+    after_help = "Aliases:\n  attach         alias for join\n  detach         alias for leave\n  info           alias for status\n  list-sessions  alias for list\n  list-panes     alias for list"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -59,7 +59,9 @@ enum Commands {
     SendKeys(SendKeysArgs),
     CapturePane(CapturePaneArgs),
     KillSession(SessionArg),
-    Info(InfoArgs),
+    Status(StatusArgs),
+    #[command(hide = true)]
+    Info(StatusArgs),
     Init,
     #[command(external_subcommand)]
     External(Vec<OsString>),
@@ -103,7 +105,7 @@ struct CapturePaneArgs {
 }
 
 #[derive(Args)]
-struct InfoArgs {
+struct StatusArgs {
     #[arg(long)]
     debug: bool,
 }
@@ -362,7 +364,7 @@ fn run() -> io::Result<()> {
             Commands::SendKeys(args) => cmd_send_keys(&args),
             Commands::CapturePane(args) => cmd_capture_pane(&args),
             Commands::KillSession(args) => cmd_kill_session(Some(&args.session)),
-            Commands::Info(args) => cmd_info(&args),
+            Commands::Status(args) | Commands::Info(args) => cmd_status(&args),
             Commands::Init => {
                 let style = Style::stdout();
                 println!("# {}: auto-wrap is disabled.", style.brand());
@@ -375,7 +377,7 @@ fn run() -> io::Result<()> {
     }
 
     if env::var_os("HITCH_SESSION").is_some() {
-        cmd_info(&InfoArgs { debug: false })
+        cmd_status(&StatusArgs { debug: false })
     } else {
         cmd_new()
     }
@@ -1166,7 +1168,7 @@ fn cmd_detach() -> io::Result<()> {
     send_packet(&mut stream, MSG_DETACH_SESSION, &[])
 }
 
-fn cmd_info(args: &InfoArgs) -> io::Result<()> {
+fn cmd_status(args: &StatusArgs) -> io::Result<()> {
     let style = Style::stdout();
     let Ok(session) = env::var("HITCH_SESSION") else {
         println!(

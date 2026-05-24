@@ -219,5 +219,5 @@ inspection, and input forwarding.
 - Add proper binary release/install flow.
 - Improve output cleanup or add a real terminal-screen model.
 - Add stronger process/current-command detection.
-- Consider optional prompt integration later; startup message and `hitch info`
+- Consider optional prompt integration later; startup message and `hitch status`
   are enough for the MVP.
