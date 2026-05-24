@@ -30,7 +30,7 @@ struct Style {
 }
 
 #[derive(Parser)]
-#[command(name = "muxi", version, allow_external_subcommands = true)]
+#[command(name = "hitch", version, allow_external_subcommands = true)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -121,7 +121,7 @@ impl Style {
     }
 
     fn brand(&self) -> String {
-        self.paint("muxi", &[GREEN])
+        self.paint("hitch", &[GREEN])
     }
 
     fn id(&self, value: impl AsRef<str>) -> String {
@@ -354,7 +354,7 @@ fn run() -> io::Result<()> {
             Commands::Init => {
                 let style = Style::stdout();
                 println!("# {}: auto-wrap is disabled.", style.brand());
-                println!("# Run \"muxi\" when you want a terminal to be visible to agents.");
+                println!("# Run \"hitch\" when you want a terminal to be visible to agents.");
                 Ok(())
             }
             Commands::Exit => {
@@ -366,7 +366,7 @@ fn run() -> io::Result<()> {
         };
     }
 
-    if env::var_os("MUXI_SESSION").is_some() {
+    if env::var_os("HITCH_SESSION").is_some() {
         cmd_info(&InfoArgs { debug: false })
     } else {
         cmd_new()
@@ -406,10 +406,10 @@ fn numeric_attach_shortcut(args: &[OsString]) -> Option<&str> {
 
 fn state_dir() -> PathBuf {
     if let Some(xdg) = env::var_os("XDG_STATE_HOME") {
-        PathBuf::from(xdg).join("muxi")
+        PathBuf::from(xdg).join("hitch")
     } else {
         PathBuf::from(env::var_os("HOME").unwrap_or_else(|| OsString::from(".")))
-            .join(".local/state/muxi")
+            .join(".local/state/hitch")
     }
 }
 
@@ -452,10 +452,10 @@ fn next_session_id() -> io::Result<String> {
 }
 
 fn cmd_new() -> io::Result<()> {
-    if let Ok(session) = env::var("MUXI_SESSION") {
+    if let Ok(session) = env::var("HITCH_SESSION") {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
-            format!("already inside muxi session {session}"),
+            format!("already inside hitch session {session}"),
         ));
     }
 
@@ -501,7 +501,7 @@ fn cmd_new() -> io::Result<()> {
         let code = match master_loop(listener, &record, &shell) {
             Ok(()) => 0,
             Err(err) => {
-                eprintln!("muxi master: {err}");
+                eprintln!("hitch master: {err}");
                 1
             }
         };
@@ -651,9 +651,9 @@ fn fork_shell(shell: &str, record: &SessionRecord) -> io::Result<(RawFd, libc::p
     }
     if pid == 0 {
         unsafe {
-            env::set_var("MUXI", "1");
-            env::set_var("MUXI_SESSION", &record.id);
-            env::set_var("MUXI_SOCKET", &record.socket);
+            env::set_var("HITCH", "1");
+            env::set_var("HITCH_SESSION", &record.id);
+            env::set_var("HITCH_SOCKET", &record.socket);
         }
         let c_shell = CString::new(shell.as_bytes()).unwrap();
         unsafe {
@@ -697,7 +697,7 @@ fn attach_socket(socket: &str, session_id: &str, log_path: Option<&str>) -> io::
     let original = terminal_raw()?;
     let _restore = TermRestore(original);
     let style = Style::stdout();
-    let exit_message = || style.muted(format!("[muxi exited session {session_id}]"));
+    let exit_message = || style.muted(format!("[hitch exited session {session_id}]"));
 
     send_packet(&mut stream, MSG_ATTACH, &[])?;
     send_winch(&mut stream)?;
@@ -1050,18 +1050,18 @@ fn find_session(id: Option<&str>) -> io::Result<SessionRecord> {
         )),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("ambiguous muxi session: {id}"),
+            format!("ambiguous hitch session: {id}"),
         )),
     }
 }
 
 fn cmd_attach(id: Option<&str>) -> io::Result<()> {
-    if let Ok(session) = env::var("MUXI_SESSION") {
+    if let Ok(session) = env::var("HITCH_SESSION") {
         let style = Style::stderr();
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             format!(
-                "already inside muxi session {}; detach first with {}",
+                "already inside hitch session {}; detach first with {}",
                 style.id(session),
                 style.command("Ctrl-\\")
             ),
@@ -1138,13 +1138,16 @@ fn cmd_kill_session(id: Option<&str>) -> io::Result<()> {
 
 fn cmd_info(args: &InfoArgs) -> io::Result<()> {
     let style = Style::stdout();
-    let Ok(session) = env::var("MUXI_SESSION") else {
-        println!("not inside a muxi session, run `{}` to join", style.brand());
+    let Ok(session) = env::var("HITCH_SESSION") else {
+        println!(
+            "not inside a hitch session, run `{}` to join",
+            style.brand()
+        );
         return Ok(());
     };
     println!("currently in the session {}", style.id(session));
     if args.debug {
-        if let Ok(socket) = env::var("MUXI_SOCKET") {
+        if let Ok(socket) = env::var("HITCH_SOCKET") {
             println!("socket {}", style.path(socket));
         }
     }
