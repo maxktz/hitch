@@ -920,9 +920,10 @@ fn cmd_list(args: &ListArgs) -> io::Result<()> {
     if let Some(filter) = filter_dir {
         let filter = filter.canonicalize().unwrap_or(filter);
         sessions.retain(|session| {
-            let cwd = Path::new(&session.cwd);
-            let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
-            cwd.starts_with(&filter)
+            let state = read_session_state(&session.id);
+            let origin = canonical_path(&session.cwd);
+            let current = canonical_path(current_dir_for_session(session, &state));
+            origin.starts_with(&filter) || current.starts_with(&filter)
         });
     }
 
@@ -1221,6 +1222,11 @@ fn current_dir_for_session(session: &SessionRecord, state: &SessionState) -> Str
         .and_then(cwd_for_pgrp)
         .or_else(|| state.current_dir.clone())
         .unwrap_or_else(|| session.cwd.clone())
+}
+
+fn canonical_path(path: impl AsRef<Path>) -> PathBuf {
+    let path = path.as_ref();
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn shorten_home(path: &str) -> String {
