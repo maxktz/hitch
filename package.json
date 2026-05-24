@@ -1,16 +1,16 @@
 {
-  "name": "agentmux",
+  "name": "muxi",
   "version": "0.1.0",
-  "description": "Give AI agents visibility into your tmux sessions",
+  "description": "Give AI agents visibility into your terminal sessions",
   "type": "module",
   "packageManager": "pnpm@10.4.1",
   "bin": {
-    "agentmux": "./dist/index.js"
+    "muxi": "./dist/index.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "node scripts/build-native.cjs && tsc",
     "preinstall": "node scripts/ensure-pnpm.cjs",
-    "prepare": "tsc"
+    "prepare": "node scripts/build-native.cjs && tsc"
   },
   "dependencies": {
     "chalk": "^5.4.1",

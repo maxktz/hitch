@@ -1,4 +1,4 @@
-# agentmux
+# muxi
 
 > Give AI coding agents visibility into the terminals you already have running.
 
@@ -28,7 +28,7 @@ to it.
 
 ## The Idea
 
-`agentmux` makes every terminal you open part of a shared, inspectable layer
+`muxi` makes every terminal you open part of a shared, inspectable layer
 that agents can read.
 
 Two halves:
@@ -39,12 +39,12 @@ Two halves:
    them like always.
 
 2. **Agent-readable context.** Because every terminal now lives inside tmux,
-   a single command — `agentmux list` — can enumerate all of them and report
+   a single command — `muxi list` — can enumerate all of them and report
    rich context for each: the working directory, the command currently running
    (with full arguments), whether it's still running or finished, how recently
    it was active, and a head/tail snippet of its output.
 
-Agents are told (via their global instruction files) to run `agentmux list`
+Agents are told (via their global instruction files) to run `muxi list`
 before starting any long-running process. So instead of blindly spawning a
 duplicate dev server, the agent first looks, sees "there's already a `bun dev`
 running in this directory, last active 3s ago," and uses it.
@@ -60,14 +60,14 @@ all that — I don't even touch it."*
 A shell snippet is added to `.zshrc` via:
 
 ```sh
-eval "$(agentmux init)"
+eval "$(muxi init)"
 ```
 
-`agentmux init` prints a guard that, for every new interactive shell, replaces
+`muxi init` prints a guard that, for every new interactive shell, replaces
 itself with a tmux session:
 
 ```sh
-if [ -z "$TMUX" ] && [ -z "$AGENTMUX_DISABLED" ] && [ -z "$INSIDE_EMACS" ] \
+if [ -z "$TMUX" ] && [ -z "$MUXI_DISABLED" ] && [ -z "$INSIDE_EMACS" ] \
    && [ -z "$VSCODE_INJECTION" ] && [[ "$TERM_PROGRAM" != "vscode" ]]; then
   exec tmux new-session <per-session settings> || true
 fi
@@ -80,14 +80,14 @@ Key design points:
   The tmux session genuinely *is* the terminal, not a thing layered on top of it.
 - **Guards** prevent double-wrapping and stay out of the way of environments
   that manage their own shells: existing tmux sessions (`$TMUX`), the escape
-  hatch (`$AGENTMUX_DISABLED`), Emacs, and VS Code's integrated terminal.
+  hatch (`$MUXI_DISABLED`), Emacs, and VS Code's integrated terminal.
 - **`|| true`** keeps a non-zero tmux exit from cascading into the terminal and
   causing it to close unexpectedly. (This was the fix for an early
   terminal-crash bug.)
 - **Per-session settings**, not global config. The settings are passed inline on
   the `new-session` command (`\; set ...` chain) rather than written to
   `~/.tmux.conf`. This is intentional: people who use tmux for real should not
-  have their global tmux behavior hijacked by agentmux.
+  have their global tmux behavior hijacked by muxi.
 
 The per-session settings make tmux feel like a plain terminal:
 
@@ -99,16 +99,16 @@ The per-session settings make tmux feel like a plain terminal:
 ### 2. The escape hatch
 
 Sometimes you genuinely want a raw terminal — to use your native terminal
-features, or to launch your own custom tmux setup. `agentmux exit` handles this:
+features, or to launch your own custom tmux setup. `muxi exit` handles this:
 
 ```sh
-tmux detach -E "AGENTMUX_DISABLED=1 zsh"
+tmux detach -E "MUXI_DISABLED=1 zsh"
 ```
 
 This detaches the proxy and drops you into a plain shell with
-`AGENTMUX_DISABLED=1` set, so the `.zshrc` guard won't immediately re-wrap you.
+`MUXI_DISABLED=1` set, so the `.zshrc` guard won't immediately re-wrap you.
 
-### 3. Reading the sessions: `agentmux list`
+### 3. Reading the sessions: `muxi list`
 
 This is the payload — the command agents actually call.
 
@@ -117,7 +117,7 @@ For every pane across every tmux session it reports:
 - **Session name** and whether a human is currently attached ("human watching")
 - **Directory** (tilde-shortened)
 - **Latest command** — the full command line *with arguments*, not just the
-  process name. tmux's `pane_current_command` only gives you `bun`; agentmux
+  process name. tmux's `pane_current_command` only gives you `bun`; muxi
   walks the process tree via `ps` to recover the real `bun dev`.
 - **Status** — whether that command is still running or has finished
 - **Activity** — how long ago the session was last active ("3s ago", "2m ago",
@@ -135,7 +135,7 @@ Flags:
 ### 4. Telling the agents to use it
 
 The whole thing only works if agents actually *look* before they leap. So
-agentmux's prompt instructions are installed into the global instruction files
+muxi's prompt instructions are installed into the global instruction files
 of the major agents:
 
 - Claude Code → `~/.claude/CLAUDE.md`
@@ -143,7 +143,7 @@ of the major agents:
 - OpenCode → `~/.config/opencode/AGENTS.md`
 
 The canonical prompt lives in `prompt.md`. It instructs agents, before starting
-any dev server / tunnel / long-running process, to run `agentmux list --dir .`,
+any dev server / tunnel / long-running process, to run `muxi list --dir .`,
 check for an existing matching process, reuse it if present, and interact with
 existing sessions via tmux directly (`send-keys`, etc.) rather than spawning
 duplicates.
@@ -190,10 +190,10 @@ A small Node.js + TypeScript CLI, built with `commander` and `chalk`.
 2. **Don't hijack real tmux.** Use per-session inline settings, never global
    `~/.tmux.conf`. People who actually use tmux must be unaffected.
 
-3. **Always provide an escape hatch.** `agentmux exit` + `AGENTMUX_DISABLED`.
+3. **Always provide an escape hatch.** `muxi exit` + `MUXI_DISABLED`.
 
 4. **Agents prefer fewer flags.** A solution that requires the agent to remember
-   `-L agentmux` on every tmux command was rejected — the friction defeats the
+   `-L muxi` on every tmux command was rejected — the friction defeats the
    purpose. The tool should "just work" on the default socket.
 
 5. **Change one thing at a time.** The status-bar work repeatedly broke terminal
@@ -204,14 +204,14 @@ A small Node.js + TypeScript CLI, built with `commander` and `chalk`.
 
 **Working well:**
 
-- ✅ Core `agentmux list` — confirmed excellent with real-world multi-terminal
+- ✅ Core `muxi list` — confirmed excellent with real-world multi-terminal
   dev workflows.
-- ✅ Invisible tmux auto-wrapping via `eval "$(agentmux init)"`.
+- ✅ Invisible tmux auto-wrapping via `eval "$(muxi init)"`.
 - ✅ Full-command resolution (shows `bun dev`, not `bun`).
 - ✅ Monorepo-aware `--dir` filtering.
 - ✅ Agent prompt integration for Claude Code, Codex, OpenCode.
-- ✅ `agentmux exit` escape hatch.
-- ✅ Status bar badge: `● agentmux` shown in green on the right.
+- ✅ `muxi exit` escape hatch.
+- ✅ Status bar badge: `● muxi` shown in green on the right.
 
 **Open problems:**
 
@@ -220,7 +220,7 @@ A small Node.js + TypeScript CLI, built with `commander` and `chalk`.
   `window-status-current-format` to empty, via the `\;` chain, `source-file`,
   or a second `.zshrc` pass) has broken terminal opening. A safe approach is
   still needed.
-- ⚠️ Desired final badge: `● agentmux [0]` (fold the session number in) with
+- ⚠️ Desired final badge: `● muxi [0]` (fold the session number in) with
   nothing else in the bar.
 
 ## Future
