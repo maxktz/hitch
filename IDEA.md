@@ -158,7 +158,6 @@ inspection, and input forwarding.
 |------|----------------|
 | `src-rs/main.rs` | Native CLI, PTY broker, attach loop, session registry, output capture, and tmux-like agent commands. |
 | `Cargo.toml` | Rust package definition and binary target. |
-| `package.json` | npm/pnpm packaging shim that builds and exposes the Rust binary. |
 | `prompt.md`    | Canonical agent prompt, copied into agent config files. |
 
 ### Rust internals
@@ -217,7 +216,7 @@ inspection, and input forwarding.
 
 ## Future
 
-- Make the project public on npm.
+- Add proper binary release/install flow.
 - Improve output cleanup or add a real terminal-screen model.
 - Add stronger process/current-command detection.
 - Consider optional prompt integration later; startup message and `muxi info`
