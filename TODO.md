@@ -1,4 +1,6 @@
 - spawned in one dir, but switched to other issue
+- get rid of pnpm
+- no error print on info
 - fix while detach detaches in all of windows
 - while attaching it doesn't show anything
 - some status bar on edge to know if muxi is active at a time

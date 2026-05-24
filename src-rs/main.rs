@@ -20,6 +20,7 @@ const MSG_WINCH: u8 = 3;
 const RESET: &str = "\x1b[0m";
 const DIM: &str = "\x1b[2m";
 const GREEN: &str = "\x1b[32m";
+const ATTACH_HISTORY_BYTES: u64 = 64 * 1024;
 
 struct Style {
     enabled: bool,
@@ -384,7 +385,7 @@ fn cmd_new() -> io::Result<()> {
 
     fs::write(&record.master_pid_file, format!("{master_pid}\n"))?;
     drop(listener);
-    let status = attach_socket(&record.socket, &record.id)?;
+    let status = attach_socket(&record.socket, &record.id, None)?;
     let _ = fs::remove_dir_all(&dir);
     process::exit(status);
 }
@@ -546,7 +547,7 @@ fn handle_packet(pty_fd: RawFd, client: &mut Client, packet: Packet) -> io::Resu
     Ok(())
 }
 
-fn attach_socket(socket: &str, session_id: &str) -> io::Result<i32> {
+fn attach_socket(socket: &str, session_id: &str, log_path: Option<&str>) -> io::Result<i32> {
     let mut stream = UnixStream::connect(socket)?;
     let original = terminal_raw()?;
     let _restore = TermRestore(original);
@@ -555,6 +556,9 @@ fn attach_socket(socket: &str, session_id: &str) -> io::Result<i32> {
 
     send_packet(&mut stream, MSG_ATTACH, &[])?;
     send_winch(&mut stream)?;
+    if let Some(log_path) = log_path {
+        print_attach_history(session_id, log_path, &style)?;
+    }
 
     loop {
         let stdin_fd = libc::STDIN_FILENO;
@@ -597,7 +601,7 @@ fn attach_socket(socket: &str, session_id: &str) -> io::Result<i32> {
             if len <= 0 {
                 return Ok(1);
             }
-            if buf[0] == (b'\\' & 0x1f) {
+            if is_detach_key(buf[0]) {
                 send_packet(&mut stream, MSG_DETACH, &[])?;
                 println!("\r\n{}", exit_message());
                 return Ok(0);
@@ -605,6 +609,47 @@ fn attach_socket(socket: &str, session_id: &str) -> io::Result<i32> {
             send_packet(&mut stream, MSG_PUSH, &buf[..len as usize])?;
         }
     }
+}
+
+fn print_attach_history(session_id: &str, log_path: &str, style: &Style) -> io::Result<()> {
+    let mut stdout = io::stdout();
+    writeln!(
+        stdout,
+        "{} attached session {} {}",
+        style.brand(),
+        style.id(session_id),
+        style.muted("(Ctrl-\\ to exit)")
+    )?;
+
+    let history = tail_raw_bytes(log_path, ATTACH_HISTORY_BYTES)?;
+    if !history.is_empty() {
+        stdout.write_all(&history)?;
+        if !history.ends_with(b"\n") {
+            stdout.write_all(b"\r\n")?;
+        }
+    }
+    stdout.flush()
+}
+
+fn tail_raw_bytes(path: &str, limit: u64) -> io::Result<Vec<u8>> {
+    let mut file = OpenOptions::new().read(true).open(path)?;
+    let len = file.metadata()?.len();
+    let start = len.saturating_sub(limit);
+    use std::io::Seek;
+    file.seek(io::SeekFrom::Start(start))?;
+
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    if start > 0 {
+        if let Some(pos) = bytes.iter().position(|b| *b == b'\n') {
+            bytes.drain(..=pos);
+        }
+    }
+    Ok(bytes)
+}
+
+fn is_detach_key(byte: u8) -> bool {
+    byte == 0x04 || byte == (b'\\' & 0x1f)
 }
 
 fn terminal_raw() -> io::Result<libc::termios> {
@@ -853,7 +898,7 @@ fn cmd_attach(id: Option<&str>) -> io::Result<()> {
     }
 
     let session = find_session(id)?;
-    let status = attach_socket(&session.socket, &session.id)?;
+    let status = attach_socket(&session.socket, &session.id, Some(&session.log))?;
     process::exit(status);
 }
 
