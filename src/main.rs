@@ -1252,7 +1252,7 @@ fn cmd_setup_prompt() -> io::Result<()> {
     }
 
     println!("unsupported shell: {shell}");
-    println!("manual prompt segment: show `h$HITCH_SESSION` when HITCH_SESSION is set");
+    println!("manual prompt segment: show `#$HITCH_SESSION` when HITCH_SESSION is set");
     Ok(())
 }
 
@@ -1458,7 +1458,7 @@ fn ensure_p10k_left_segment(raw: &str) -> io::Result<String> {
         .unwrap_or(lines.len());
     lines.insert(
         insert_at,
-        "    hitch                   # hitch session id".to_string(),
+        "    hitch                   # hitch terminal id".to_string(),
     );
 
     let mut out = String::new();
@@ -1469,17 +1469,17 @@ fn ensure_p10k_left_segment(raw: &str) -> io::Result<String> {
 }
 
 fn p10k_prompt_block() -> &'static str {
-    r#"  # >>> hitch shell integration >>>
+    r##"  # >>> hitch shell integration >>>
   function prompt_hitch() {
-    [[ -n "${HITCH_SESSION:-}" ]] && p10k segment -f 2 -t "h${HITCH_SESSION}"
+    [[ -n "${HITCH_SESSION:-}" ]] && p10k segment -f 2 -t "#${HITCH_SESSION}"
   }
-  # <<< hitch shell integration <<<"#
+  # <<< hitch shell integration <<<"##
 }
 
 fn zsh_prompt_block() -> &'static str {
     r#"# >>> hitch shell integration >>>
 function _hitch_prompt_segment() {
-  [[ -n "${HITCH_SESSION:-}" ]] && print -n "%F{2}h${HITCH_SESSION}%f "
+  [[ -n "${HITCH_SESSION:-}" ]] && print -n "%F{2}#${HITCH_SESSION}%f "
 }
 
 if [[ -z "${HITCH_PROMPT_INSTALLED:-}" && -z "${POWERLEVEL9K_LEFT_PROMPT_ELEMENTS:-}" ]]; then
@@ -1505,7 +1505,7 @@ function hitch() {
 fn bash_prompt_block() -> &'static str {
     r#"# >>> hitch shell integration >>>
 _hitch_prompt_segment() {
-  [[ -n "${HITCH_SESSION:-}" ]] && printf '\[\033[32m\]h%s\[\033[0m\] ' "$HITCH_SESSION"
+  [[ -n "${HITCH_SESSION:-}" ]] && printf '\[\033[32m\]#%s\[\033[0m\] ' "$HITCH_SESSION"
 }
 
 if [[ -z "${HITCH_PROMPT_INSTALLED:-}" ]]; then
@@ -1537,7 +1537,7 @@ end
 function fish_prompt
     if set -q HITCH_SESSION
         set_color green
-        printf 'h%s ' $HITCH_SESSION
+        printf '#%s ' $HITCH_SESSION
         set_color normal
     end
     __hitch_original_fish_prompt
