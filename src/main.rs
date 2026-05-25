@@ -20,6 +20,7 @@ const MSG_WINCH: u8 = 3;
 const MSG_DETACH_SESSION: u8 = 4;
 const SKILL_INSTALL_URL: &str = "https://github.com/maxktz/hitch";
 const SKILL_NAME: &str = "hitch";
+const SKILL_MD: &str = include_str!("../SKILL.md");
 
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
@@ -36,31 +37,49 @@ struct Style {
 }
 
 #[derive(Parser)]
-#[command(name = "hitch", version)]
+#[command(
+    name = "hitch",
+    version,
+    after_help = "Agents: run `hitch list` before starting dev servers, watchers, tunnels, REPLs, or log tails. Use `capture` to inspect output and `send-keys` to interact."
+)]
 struct Cli {
+    #[arg(long)]
+    skill: bool,
     #[command(subcommand)]
     command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Share this terminal with agents.
+    #[command(next_help_heading = "User commands")]
     Start,
+    /// Stop sharing this terminal.
     Stop,
+    /// Show whether this terminal is being shared.
+    Status(StatusArgs),
+    /// Install shell integration or the optional agent skill.
+    Setup(SetupArgs),
+    /// List shared terminals and compact context.
+    #[command(next_help_heading = "Agent commands")]
     List(ListArgs),
+    /// Send input to a shared terminal.
     SendKeys(SendKeysArgs),
+    /// Read output from a shared terminal.
     Capture(CapturePaneArgs),
     #[command(hide = true)]
     CapturePane(CapturePaneArgs),
+    /// Kill a shared terminal.
     Kill(SessionArg),
     #[command(hide = true)]
     KillSession(SessionArg),
     #[command(hide = true)]
     KillSessions(SessionArg),
-    Status(StatusArgs),
+    /// Print a note about shell initialization.
+    #[command(next_help_heading = "Other commands")]
     Init,
     #[command(hide = true)]
     InitPrompt,
-    Setup(SetupArgs),
 }
 
 #[derive(Args)]
@@ -384,6 +403,15 @@ fn main() {
 }
 
 fn run() -> io::Result<()> {
+    if top_level_skill_requested() {
+        return cmd_print_skill();
+    }
+
+    if top_level_help_requested() {
+        print_top_level_help();
+        return Ok(());
+    }
+
     let cli = Cli::parse();
     if let Some(command) = cli.command {
         return match command {
@@ -412,6 +440,51 @@ fn run() -> io::Result<()> {
     } else {
         cmd_start()
     }
+}
+
+fn top_level_skill_requested() -> bool {
+    let args = env::args_os().skip(1).collect::<Vec<_>>();
+    if args.len() != 1 {
+        return false;
+    }
+    matches!(args[0].to_str(), Some("--skill"))
+}
+
+fn top_level_help_requested() -> bool {
+    let args = env::args_os().skip(1).collect::<Vec<_>>();
+    if args.len() != 1 {
+        return false;
+    }
+    matches!(args[0].to_str(), Some("-h") | Some("--help") | Some("help"))
+}
+
+fn print_top_level_help() {
+    println!("Usage: hitch [COMMAND]");
+    println!();
+    println!("User commands:");
+    println!("  start        Share this terminal with agents");
+    println!("  stop         Stop sharing this terminal");
+    println!("  status       Show whether this terminal is being shared");
+    println!("  setup        Install shell integration or the optional agent skill");
+    println!();
+    println!("Agent commands:");
+    println!("  list         List shared terminals and compact context");
+    println!("  capture      Read output from a shared terminal");
+    println!("  send-keys    Send input to a shared terminal");
+    println!("  kill         Kill a shared terminal");
+    println!();
+    println!("Other commands:");
+    println!("  init         Print a note about shell initialization");
+    println!("  help         Print help for a command");
+    println!();
+    println!("Options:");
+    println!("      --skill    Print agent instructions");
+    println!("  -h, --help     Print help");
+    println!("  -V, --version  Print version");
+    println!();
+    println!(
+        "For agent: you can run `hitch --skill` to learn how to use hitch. Please don't run user commands, only users are able to use them."
+    );
 }
 
 fn state_dir() -> PathBuf {
@@ -1268,6 +1341,14 @@ fn cmd_install_skill() -> io::Result<()> {
         )),
         Err(err) => Err(err),
     }
+}
+
+fn cmd_print_skill() -> io::Result<()> {
+    print!("{}", SKILL_MD);
+    if !SKILL_MD.ends_with('\n') {
+        println!();
+    }
+    Ok(())
 }
 
 fn cmd_setup(args: &SetupArgs) -> io::Result<()> {
