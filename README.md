@@ -1,8 +1,8 @@
 # hitch
 
-`hitch` gives AI coding agents visibility into terminal sessions you already have running.
+`hitch` gives AI coding agents visibility into terminals you already have running.
 
-It starts lightweight, resumable shell sessions and lets agents inspect or interact with them before spawning duplicate dev servers, tunnels, watchers, or REPLs.
+It shares lightweight shell terminals and lets agents inspect or interact with them before spawning duplicate dev servers, tunnels, watchers, or REPLs.
 
 ## Install
 
@@ -16,31 +16,33 @@ NPM distribution is planned.
 
 ## Usage
 
-Start a hitch-backed shell:
+Start sharing this terminal:
 
 ```sh
 hitch
+# or
+hitch start
 ```
 
-Show the current hitch session in your shell prompt:
+Install shell integration:
 
 ```sh
-hitch setup prompt
+hitch setup shell
 ```
 
-List sessions visible from the current project:
+List shared terminals visible from the current project:
 
 ```sh
 hitch list
 ```
 
-Join an existing session:
+Stop sharing this terminal:
 
 ```sh
-hitch join 1
+hitch stop
 ```
 
-Send input to a session:
+Send input to a terminal:
 
 ```sh
 hitch send-keys -t 1 "npm run dev" Enter
@@ -49,7 +51,7 @@ hitch send-keys -t 1 "npm run dev" Enter
 Read recent output:
 
 ```sh
-hitch capture-pane -t 1 -p
+hitch capture -t 1 -p
 ```
 
 Install the optional agent skill:
@@ -61,6 +63,6 @@ hitch setup skill
 ## Notes
 
 - `hitch list` is scoped to the current directory by default.
-- `hitch list --all` shows sessions across projects.
-- `attach`, `detach`, `list-sessions`, and `list-panes` are supported compatibility aliases.
+- `hitch list --all` shows shared terminals across projects.
+- `capture-pane`, `kill-session`, and `kill-sessions` are supported compatibility aliases.
 - macOS is the primary target right now.

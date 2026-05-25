@@ -1,4 +1,4 @@
-use clap::{Args, CommandFactory, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::ffi::{CString, OsString};
@@ -28,6 +28,7 @@ const GREEN: &str = "\x1b[32m";
 const RED: &str = "\x1b[31m";
 const ATTACH_HISTORY_BYTES: u64 = 64 * 1024;
 const ACTIVE_COMMAND_HEAD_LINES: usize = 5;
+const EXIT_PARENT_CODE: i32 = 42;
 static WINCH_PENDING: AtomicBool = AtomicBool::new(false);
 
 struct Style {
@@ -35,12 +36,7 @@ struct Style {
 }
 
 #[derive(Parser)]
-#[command(
-    name = "hitch",
-    version,
-    allow_external_subcommands = true,
-    after_help = "Aliases:\n  attach         alias for join\n  detach         alias for leave\n  info           alias for status\n  list-sessions  alias for list\n  list-panes     alias for list"
-)]
+#[command(name = "hitch", version)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -48,30 +44,23 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    New,
+    Start,
+    Stop,
     List(ListArgs),
-    #[command(hide = true)]
-    ListSessions(ListArgs),
-    #[command(hide = true)]
-    ListPanes(ListArgs),
-    Join(SessionArg),
-    Leave,
-    #[command(hide = true)]
-    Attach(SessionArg),
-    #[command(hide = true)]
-    Detach,
     SendKeys(SendKeysArgs),
-    CapturePane(CapturePaneArgs),
-    KillSession(SessionArg),
-    Status(StatusArgs),
+    Capture(CapturePaneArgs),
     #[command(hide = true)]
-    Info(StatusArgs),
+    CapturePane(CapturePaneArgs),
+    Kill(SessionArg),
+    #[command(hide = true)]
+    KillSession(SessionArg),
+    #[command(hide = true)]
+    KillSessions(SessionArg),
+    Status(StatusArgs),
     Init,
     #[command(hide = true)]
     InitPrompt,
     Setup(SetupArgs),
-    #[command(external_subcommand)]
-    External(Vec<OsString>),
 }
 
 #[derive(Args)]
@@ -82,8 +71,8 @@ struct SetupArgs {
 
 #[derive(Subcommand)]
 enum SetupCommand {
-    /// Install shell prompt integration.
-    Prompt,
+    /// Install shell integration.
+    Shell,
     /// Install the optional agent skill.
     Skill,
 }
@@ -100,6 +89,7 @@ struct ListArgs {
 
 #[derive(Args)]
 struct SessionArg {
+    #[arg(value_name = "TERMINAL")]
     session: String,
 }
 
@@ -377,15 +367,15 @@ fn run() -> io::Result<()> {
     let cli = Cli::parse();
     if let Some(command) = cli.command {
         return match command {
-            Commands::New => cmd_new(),
-            Commands::List(args) | Commands::ListSessions(args) | Commands::ListPanes(args) => {
-                cmd_list(&args)
-            }
-            Commands::Join(args) | Commands::Attach(args) => cmd_attach(Some(&args.session)),
+            Commands::Start => cmd_start(),
+            Commands::Stop => cmd_stop(),
+            Commands::List(args) => cmd_list(&args),
             Commands::SendKeys(args) => cmd_send_keys(&args),
-            Commands::CapturePane(args) => cmd_capture_pane(&args),
-            Commands::KillSession(args) => cmd_kill_session(Some(&args.session)),
-            Commands::Status(args) | Commands::Info(args) => cmd_status(&args),
+            Commands::Capture(args) | Commands::CapturePane(args) => cmd_capture_pane(&args),
+            Commands::Kill(args) | Commands::KillSession(args) | Commands::KillSessions(args) => {
+                cmd_kill_session(Some(&args.session))
+            }
+            Commands::Status(args) => cmd_status(&args),
             Commands::Init => {
                 let style = Style::stdout();
                 println!("# {}: auto-wrap is disabled.", style.brand());
@@ -394,46 +384,13 @@ fn run() -> io::Result<()> {
             }
             Commands::InitPrompt => cmd_init_prompt(),
             Commands::Setup(args) => cmd_setup(&args),
-            Commands::Leave | Commands::Detach => cmd_detach(),
-            Commands::External(args) => cmd_external(args),
         };
     }
 
     if env::var_os("HITCH_SESSION").is_some() {
         cmd_status(&StatusArgs { debug: false })
     } else {
-        cmd_new()
-    }
-}
-
-fn cmd_external(args: Vec<OsString>) -> io::Result<()> {
-    let Some(session) = numeric_attach_shortcut(&args) else {
-        Cli::command()
-            .error(
-                clap::error::ErrorKind::InvalidSubcommand,
-                format!(
-                    "unrecognized subcommand '{}'",
-                    args.first()
-                        .and_then(|arg| arg.to_str())
-                        .unwrap_or("<invalid>")
-                ),
-            )
-            .exit();
-    };
-
-    cmd_attach(Some(session))
-}
-
-fn numeric_attach_shortcut(args: &[OsString]) -> Option<&str> {
-    if args.len() != 1 {
-        return None;
-    }
-
-    let value = args[0].to_str()?;
-    if value.chars().all(|ch| ch.is_ascii_digit()) {
-        Some(value)
-    } else {
-        None
+        cmd_start()
     }
 }
 
@@ -456,6 +413,10 @@ fn ensure_state_dirs() -> io::Result<()> {
 
 fn session_path(id: &str) -> PathBuf {
     sessions_dir().join(id)
+}
+
+fn stop_marker_path(id: &str) -> PathBuf {
+    session_path(id).join("stopped")
 }
 
 fn now_epoch() -> u64 {
@@ -484,11 +445,11 @@ fn next_session_id() -> io::Result<String> {
     Ok(next.to_string())
 }
 
-fn cmd_new() -> io::Result<()> {
+fn cmd_start() -> io::Result<()> {
     if let Ok(session) = env::var("HITCH_SESSION") {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
-            format!("already inside hitch session {session}"),
+            format!("already sharing terminal {session}"),
         ));
     }
 
@@ -497,6 +458,7 @@ fn cmd_new() -> io::Result<()> {
     let id = next_session_id()?;
     let dir = session_path(&id);
     fs::create_dir_all(&dir)?;
+    let _ = fs::remove_file(stop_marker_path(&id));
 
     let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     let record = SessionRecord {
@@ -516,10 +478,10 @@ fn cmd_new() -> io::Result<()> {
 
     let style = Style::stdout();
     println!(
-        "{} joined session {} {}",
+        "{} sharing terminal {} {}",
         style.brand(),
         style.id(&id),
-        style.muted("(Ctrl-\\ to exit)")
+        style.muted("(Ctrl-\\ to stop)")
     );
 
     let initial_winsize = terminal_winsize();
@@ -646,10 +608,8 @@ fn master_loop(
             if unsafe { libc::FD_ISSET(fd, &readfds) } {
                 match read_packet(&mut clients[i].stream) {
                     Ok(Some(packet)) if packet.typ == MSG_DETACH_SESSION => {
-                        for client in &mut clients {
-                            client.attached = false;
-                        }
-                        i += 1;
+                        let _ = fs::write(stop_marker_path(&record.id), "");
+                        clients.clear();
                         continue;
                     }
                     Ok(Some(packet)) => {
@@ -751,7 +711,7 @@ fn attach_socket(socket: &str, session_id: &str, log_path: Option<&str>) -> io::
     let _restore = TermRestore(original);
     let _winch_restore = WinchRestore::install()?;
     let style = Style::stdout();
-    let exit_message = || style.muted(format!("[hitch exited session {session_id}]"));
+    let exit_message = || style.muted(format!("[hitch stopped sharing {session_id}]"));
 
     send_packet(&mut stream, MSG_ATTACH, &[])?;
     send_winch(&mut stream)?;
@@ -791,8 +751,16 @@ fn attach_socket(socket: &str, session_id: &str, log_path: Option<&str>) -> io::
             let mut buf = [0u8; BUF_SIZE];
             let len = stream.read(&mut buf)?;
             if len == 0 {
-                println!("\r\n{}", exit_message());
-                return Ok(0);
+                if stop_marker_path(session_id).exists() {
+                    let _ = fs::remove_file(stop_marker_path(session_id));
+                    println!("\r\n{}", exit_message());
+                    return Ok(0);
+                }
+                return Ok(if log_path.is_some() {
+                    0
+                } else {
+                    EXIT_PARENT_CODE
+                });
             }
             io::stdout().write_all(&buf[..len])?;
             io::stdout().flush()?;
@@ -817,10 +785,10 @@ fn print_attach_history(session_id: &str, log_path: &str, style: &Style) -> io::
     let mut stdout = io::stdout();
     writeln!(
         stdout,
-        "{} attached session {} {}",
+        "{} sharing terminal {} {}",
         style.brand(),
         style.id(session_id),
-        style.muted("(Ctrl-\\ to exit)")
+        style.muted("(Ctrl-\\ to stop)")
     )?;
 
     let history = tail_raw_bytes(log_path, ATTACH_HISTORY_BYTES)?;
@@ -851,7 +819,7 @@ fn tail_raw_bytes(path: &str, limit: u64) -> io::Result<Vec<u8>> {
 }
 
 fn is_detach_key(byte: u8) -> bool {
-    byte == 0x04 || byte == (b'\\' & 0x1f)
+    byte == (b'\\' & 0x1f)
 }
 
 fn terminal_raw() -> io::Result<libc::termios> {
@@ -1022,7 +990,7 @@ fn cmd_list(args: &ListArgs) -> io::Result<()> {
 
     if sessions.is_empty() {
         let style = Style::stdout();
-        println!("{} {}", style.brand(), style.muted("no matching sessions"));
+        println!("{} {}", style.brand(), style.muted("no matching terminals"));
         return Ok(());
     }
 
@@ -1041,7 +1009,7 @@ fn cmd_list(args: &ListArgs) -> io::Result<()> {
             .map(time_ago)
             .unwrap_or_else(|| "unknown".to_string());
 
-        println!("----- session {} -----", style.id(&session.id));
+        println!("----- terminal {} -----", style.id(&session.id));
         println!("current dir: {}", style.path(shorten_home(&cwd)));
         if state.command_running {
             println!("actively running: {}", style.command(command));
@@ -1049,12 +1017,12 @@ fn cmd_list(args: &ListArgs) -> io::Result<()> {
             println!("no actively running commands");
         }
         println!(
-            "session last active {} ({})",
+            "terminal last active {} ({})",
             activity,
             if attached {
-                "currently attached"
+                "currently shared"
             } else {
-                "not attached"
+                "not shared"
             }
         );
 
@@ -1109,7 +1077,7 @@ fn read_sessions() -> io::Result<Vec<SessionRecord>> {
 }
 
 fn find_session(id: Option<&str>) -> io::Result<SessionRecord> {
-    let id = id.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing session"))?;
+    let id = id.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing terminal"))?;
     let exact = session_path(id).join("session.json");
     if exact.exists() {
         return serde_json::from_str(&fs::read_to_string(exact)?)
@@ -1123,24 +1091,26 @@ fn find_session(id: Option<&str>) -> io::Result<SessionRecord> {
         1 => Ok(matches.into_iter().next().unwrap()),
         0 => Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("session {id} not exists"),
+            format!("terminal {id} does not exist"),
         )),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("ambiguous hitch session: {id}"),
+            format!("ambiguous hitch terminal: {id}"),
         )),
     }
 }
 
+// Kept for manual debugging while the public CLI no longer exposes interactive attach/join.
+#[allow(dead_code)]
 fn cmd_attach(id: Option<&str>) -> io::Result<()> {
     if let Ok(session) = env::var("HITCH_SESSION") {
         let style = Style::stderr();
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             format!(
-                "can't join while already inside session {} {}",
+                "can't start while already sharing terminal {} {}",
                 style.id(session),
-                style.muted("(Ctrl-\\ to leave)")
+                style.muted("(Ctrl-\\ to stop)")
             ),
         ));
     }
@@ -1229,7 +1199,7 @@ fn cmd_kill_session(id: Option<&str>) -> io::Result<()> {
 }
 
 fn cmd_init_prompt() -> io::Result<()> {
-    println!("run `hitch setup prompt` to install prompt integration");
+    println!("run `hitch setup shell` to install shell integration");
     Ok(())
 }
 
@@ -1262,7 +1232,7 @@ fn cmd_install_skill() -> io::Result<()> {
 
 fn cmd_setup(args: &SetupArgs) -> io::Result<()> {
     match args.command {
-        SetupCommand::Prompt => cmd_setup_prompt(),
+        SetupCommand::Shell => cmd_setup_prompt(),
         SetupCommand::Skill => cmd_install_skill(),
     }
 }
@@ -1289,7 +1259,11 @@ fn cmd_setup_prompt() -> io::Result<()> {
 fn detect_shell() -> String {
     env::var("SHELL")
         .ok()
-        .and_then(|shell| Path::new(&shell).file_name().map(|name| name.to_string_lossy().into()))
+        .and_then(|shell| {
+            Path::new(&shell)
+                .file_name()
+                .map(|name| name.to_string_lossy().into())
+        })
         .unwrap_or_else(|| "unknown".to_string())
 }
 
@@ -1304,8 +1278,8 @@ fn setup_zsh_family_prompt() -> io::Result<()> {
         setup_p10k_prompt(&p10k_path)?;
     }
 
-    println!("prompt configuration updated");
-    println!("restart existing terminals to pick up the prompt update");
+    println!("shell integration updated");
+    println!("restart existing terminals to pick up shell integration");
 
     Ok(())
 }
@@ -1333,8 +1307,8 @@ fn setup_bash_prompt() -> io::Result<()> {
         return Err(io::Error::new(io::ErrorKind::NotFound, "HOME is not set"));
     };
     setup_rc_prompt(&path, bash_prompt_block())?;
-    println!("prompt configuration updated");
-    println!("restart existing terminals to pick up the prompt update");
+    println!("shell integration updated");
+    println!("restart existing terminals to pick up shell integration");
     Ok(())
 }
 
@@ -1353,8 +1327,8 @@ fn setup_fish_prompt() -> io::Result<()> {
         }
         fs::write(&path, updated)?;
     }
-    println!("prompt configuration updated");
-    println!("restart existing fish terminals to pick up the prompt update");
+    println!("shell integration updated");
+    println!("restart existing fish terminals to pick up shell integration");
     Ok(())
 }
 
@@ -1389,23 +1363,33 @@ fn upsert_marked_block(raw: &str, block: &str) -> String {
 }
 
 fn upsert_marked_block_before(raw: &str, block: &str, anchor: &str) -> String {
-    const START: &str = "# >>> hitch prompt integration >>>";
-    const END: &str = "# <<< hitch prompt integration <<<";
+    const MARKERS: [(&str, &str); 2] = [
+        (
+            "# >>> hitch shell integration >>>",
+            "# <<< hitch shell integration <<<",
+        ),
+        (
+            "# >>> hitch prompt integration >>>",
+            "# <<< hitch prompt integration <<<",
+        ),
+    ];
 
-    if let Some(start) = raw.find(START) {
-        if let Some(end_rel) = raw[start..].find(END) {
-            let line_start = raw[..start].rfind('\n').map(|index| index + 1).unwrap_or(0);
-            let replace_start = if raw[line_start..start].trim().is_empty() {
-                line_start
-            } else {
-                start
-            };
-            let end = start + end_rel + END.len();
-            let mut out = String::new();
-            out.push_str(&raw[..replace_start]);
-            out.push_str(block.trim_end());
-            out.push_str(&raw[end..]);
-            return out;
+    for (start_marker, end_marker) in MARKERS {
+        if let Some(start) = raw.find(start_marker) {
+            if let Some(end_rel) = raw[start..].find(end_marker) {
+                let line_start = raw[..start].rfind('\n').map(|index| index + 1).unwrap_or(0);
+                let replace_start = if raw[line_start..start].trim().is_empty() {
+                    line_start
+                } else {
+                    start
+                };
+                let end = start + end_rel + end_marker.len();
+                let mut out = String::new();
+                out.push_str(&raw[..replace_start]);
+                out.push_str(block.trim_end());
+                out.push_str(&raw[end..]);
+                return out;
+            }
         }
     }
 
@@ -1431,7 +1415,9 @@ fn upsert_marked_block_before(raw: &str, block: &str, anchor: &str) -> String {
 }
 
 fn upsert_p10k_prompt_block(raw: &str) -> io::Result<String> {
-    if raw.contains("# >>> hitch prompt integration >>>") {
+    if raw.contains("# >>> hitch shell integration >>>")
+        || raw.contains("# >>> hitch prompt integration >>>")
+    {
         return Ok(upsert_marked_block(raw, p10k_prompt_block()));
     }
 
@@ -1483,15 +1469,15 @@ fn ensure_p10k_left_segment(raw: &str) -> io::Result<String> {
 }
 
 fn p10k_prompt_block() -> &'static str {
-    r#"  # >>> hitch prompt integration >>>
+    r#"  # >>> hitch shell integration >>>
   function prompt_hitch() {
     [[ -n "${HITCH_SESSION:-}" ]] && p10k segment -f 2 -t "h${HITCH_SESSION}"
   }
-  # <<< hitch prompt integration <<<"#
+  # <<< hitch shell integration <<<"#
 }
 
 fn zsh_prompt_block() -> &'static str {
-    r#"# >>> hitch prompt integration >>>
+    r#"# >>> hitch shell integration >>>
 function _hitch_prompt_segment() {
   [[ -n "${HITCH_SESSION:-}" ]] && print -n "%F{2}h${HITCH_SESSION}%f "
 }
@@ -1500,11 +1486,24 @@ if [[ -z "${HITCH_PROMPT_INSTALLED:-}" && -z "${POWERLEVEL9K_LEFT_PROMPT_ELEMENT
   HITCH_PROMPT_INSTALLED=1
   PROMPT='$(_hitch_prompt_segment)'"$PROMPT"
 fi
-# <<< hitch prompt integration <<<"#
+
+function hitch() {
+  if [[ -z "${HITCH_SESSION:-}" && ( "$#" -eq 0 || "$1" == "start" ) ]]; then
+    fc -W 2>/dev/null
+  fi
+
+  command hitch "$@"
+  local code=$?
+  if [[ "$code" -eq 42 ]]; then
+    exit
+  fi
+  return "$code"
+}
+# <<< hitch shell integration <<<"#
 }
 
 fn bash_prompt_block() -> &'static str {
-    r#"# >>> hitch prompt integration >>>
+    r#"# >>> hitch shell integration >>>
 _hitch_prompt_segment() {
   [[ -n "${HITCH_SESSION:-}" ]] && printf '\[\033[32m\]h%s\[\033[0m\] ' "$HITCH_SESSION"
 }
@@ -1513,11 +1512,24 @@ if [[ -z "${HITCH_PROMPT_INSTALLED:-}" ]]; then
   HITCH_PROMPT_INSTALLED=1
   PS1='$(_hitch_prompt_segment)'"$PS1"
 fi
-# <<< hitch prompt integration <<<"#
+
+hitch() {
+  if [[ -z "${HITCH_SESSION:-}" && ( "$#" -eq 0 || "$1" == "start" ) ]]; then
+    history -a 2>/dev/null
+  fi
+
+  command hitch "$@"
+  local code=$?
+  if [[ "$code" -eq 42 ]]; then
+    exit
+  fi
+  return "$code"
+}
+# <<< hitch shell integration <<<"#
 }
 
 fn fish_prompt_block() -> &'static str {
-    r#"# >>> hitch prompt integration >>>
+    r#"# >>> hitch shell integration >>>
 if not functions -q __hitch_original_fish_prompt
     functions -c fish_prompt __hitch_original_fish_prompt
 end
@@ -1530,16 +1542,28 @@ function fish_prompt
     end
     __hitch_original_fish_prompt
 end
-# <<< hitch prompt integration <<<"#
+
+function hitch
+    if not set -q HITCH_SESSION
+        if test (count $argv) -eq 0; or test "$argv[1]" = start
+            history save 2>/dev/null
+        end
+    end
+
+    command hitch $argv
+    set code $status
+    if test $code -eq 42
+        exit
+    end
+    return $code
+end
+# <<< hitch shell integration <<<"#
 }
 
 fn cmd_detach() -> io::Result<()> {
     let style = Style::stdout();
     let Ok(socket) = env::var("HITCH_SOCKET") else {
-        println!(
-            "not inside a hitch session, run `{}` to join",
-            style.brand()
-        );
+        println!("not sharing this terminal, run `{}`", style.brand());
         return Ok(());
     };
 
@@ -1550,19 +1574,20 @@ fn cmd_detach() -> io::Result<()> {
 fn cmd_status(args: &StatusArgs) -> io::Result<()> {
     let style = Style::stdout();
     let Ok(session) = env::var("HITCH_SESSION") else {
-        println!(
-            "not inside a hitch session, run `{}` to join",
-            style.brand()
-        );
+        println!("not sharing this terminal, run `{}`", style.brand());
         return Ok(());
     };
-    println!("currently in the session {}", style.id(session));
+    println!("sharing this terminal as {}", style.id(session));
     if args.debug {
         if let Ok(socket) = env::var("HITCH_SOCKET") {
             println!("socket {}", style.path(socket));
         }
     }
     Ok(())
+}
+
+fn cmd_stop() -> io::Result<()> {
+    cmd_detach()
 }
 
 fn read_pid(path: &str) -> Option<i32> {
