@@ -1499,6 +1499,8 @@ function hitch() {
   fi
   return "$code"
 }
+
+alias unhitch='hitch stop'
 # <<< hitch shell integration <<<"#
 }
 
@@ -1525,6 +1527,8 @@ hitch() {
   fi
   return "$code"
 }
+
+alias unhitch='hitch stop'
 # <<< hitch shell integration <<<"#
 }
 
@@ -1557,6 +1561,8 @@ function hitch
     end
     return $code
 end
+
+alias unhitch 'hitch stop'
 # <<< hitch shell integration <<<"#
 }
 
