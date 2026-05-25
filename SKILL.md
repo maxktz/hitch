@@ -5,11 +5,13 @@ description: Use when the `hitch` CLI (github.com/maxktz/hitch) is available and
 
 # Hitch
 
-Use `hitch` to inspect and control terminal sessions the user already has open.
+`hitch` lets you — the agent — inspect and control terminal sessions the user already has open (dev servers, watchers, tunnels, REPLs, builds, log tails). It mirrors `tmux`: `capture-pane` and `send-keys` behave the way you'd expect from tmux.
 
-You can reuse your experience with `tmux` for the agent-facing commands: `capture-pane` and `send-keys` intentionally mirror tmux-style workflows.
+This is reference knowledge for you, not a script to run on sight. **With no concrete task, do nothing** — don't probe sessions or explain hitch to the user. Continue with whatever the user actually asked for.
 
-Before starting a dev server, watcher, tunnel, REPL, build, or log tail, check for an existing session:
+## When to reach for it
+
+The moment you're about to start a dev server, watcher, tunnel, REPL, build, or log tail, first check for an existing session instead of spawning a duplicate:
 
 ```sh
 hitch list
