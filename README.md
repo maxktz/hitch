@@ -55,7 +55,7 @@ hitch capture-pane -t 1 -p
 Install the optional agent skill:
 
 ```sh
-hitch install-skill
+hitch setup skill
 ```
 
 ## Notes

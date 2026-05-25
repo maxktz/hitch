@@ -69,7 +69,6 @@ enum Commands {
     Init,
     #[command(hide = true)]
     InitPrompt,
-    InstallSkill,
     Setup(SetupArgs),
     #[command(external_subcommand)]
     External(Vec<OsString>),
@@ -85,6 +84,8 @@ struct SetupArgs {
 enum SetupCommand {
     /// Install shell prompt integration.
     Prompt,
+    /// Install the optional agent skill.
+    Skill,
 }
 
 #[derive(Args)]
@@ -392,7 +393,6 @@ fn run() -> io::Result<()> {
                 Ok(())
             }
             Commands::InitPrompt => cmd_init_prompt(),
-            Commands::InstallSkill => cmd_install_skill(),
             Commands::Setup(args) => cmd_setup(&args),
             Commands::Leave | Commands::Detach => cmd_detach(),
             Commands::External(args) => cmd_external(args),
@@ -1263,6 +1263,7 @@ fn cmd_install_skill() -> io::Result<()> {
 fn cmd_setup(args: &SetupArgs) -> io::Result<()> {
     match args.command {
         SetupCommand::Prompt => cmd_setup_prompt(),
+        SetupCommand::Skill => cmd_install_skill(),
     }
 }
 
