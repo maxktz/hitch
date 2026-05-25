@@ -122,6 +122,10 @@ struct StatusArgs {
 }
 
 impl Style {
+    fn plain() -> Self {
+        Self { enabled: false }
+    }
+
     fn stdout() -> Self {
         Self {
             enabled: env::var_os("NO_COLOR").is_none()
@@ -710,7 +714,7 @@ fn attach_socket(socket: &str, session_id: &str, log_path: Option<&str>) -> io::
     let original = terminal_raw()?;
     let _restore = TermRestore(original);
     let _winch_restore = WinchRestore::install()?;
-    let style = Style::stdout();
+    let style = Style::plain();
     let exit_message = || style.muted(format!("[hitch stopped sharing {session_id}]"));
 
     send_packet(&mut stream, MSG_ATTACH, &[])?;
@@ -966,7 +970,9 @@ fn write_all_fd(fd: RawFd, mut bytes: &[u8]) -> io::Result<()> {
 }
 
 fn cmd_list(args: &ListArgs) -> io::Result<()> {
-    let mut sessions = read_sessions()?;
+    let all_sessions = read_sessions()?;
+    let total_count = all_sessions.len();
+    let mut sessions = all_sessions;
 
     let filter_dir = if let Some(dir) = args.dir.clone() {
         Some(dir)
@@ -988,13 +994,21 @@ fn cmd_list(args: &ListArgs) -> io::Result<()> {
 
     sessions.sort_by_key(|session| session.id.parse::<u32>().unwrap_or(u32::MAX));
 
+    let style = Style::plain();
+    if args.all {
+        println!("terminals: {} total", style.id(total_count.to_string()));
+    } else {
+        println!(
+            "terminals: {} project, {} total",
+            style.id(sessions.len().to_string()),
+            style.id(total_count.to_string())
+        );
+    }
+
     if sessions.is_empty() {
-        let style = Style::stdout();
-        println!("{} {}", style.brand(), style.muted("no matching terminals"));
         return Ok(());
     }
 
-    let style = Style::stdout();
     for session in sessions {
         let state = read_session_state(&session.id);
         let cwd = current_dir_for_session(&session, &state);
@@ -1688,7 +1702,10 @@ fn list_head_lines(path: &Path, limit: usize) -> Vec<String> {
         return Vec::new();
     };
     let text = render_terminal_text(text.as_bytes());
-    normalize_list_lines(text.lines().map(str::to_string).take(limit).collect())
+    normalize_list_lines(text.lines().map(str::to_string).collect())
+        .into_iter()
+        .take(limit)
+        .collect()
 }
 
 fn list_tail_lines(path: &str, limit: usize) -> Vec<String> {
@@ -1696,9 +1713,9 @@ fn list_tail_lines(path: &str, limit: usize) -> Vec<String> {
         return Vec::new();
     };
     let text = render_terminal_text(text.as_bytes());
-    let lines = text.lines().map(str::to_string).collect::<Vec<_>>();
+    let lines = normalize_list_lines(text.lines().map(str::to_string).collect());
     let start = lines.len().saturating_sub(limit);
-    normalize_list_lines(lines.into_iter().skip(start).collect())
+    lines.into_iter().skip(start).collect()
 }
 
 fn normalize_list_lines(lines: Vec<String>) -> Vec<String> {
