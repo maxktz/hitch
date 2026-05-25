@@ -9,6 +9,7 @@ use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{self, Command};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const BUF_SIZE: usize = 4096;
@@ -27,6 +28,7 @@ const GREEN: &str = "\x1b[32m";
 const RED: &str = "\x1b[31m";
 const ATTACH_HISTORY_BYTES: u64 = 64 * 1024;
 const ACTIVE_COMMAND_HEAD_LINES: usize = 5;
+static WINCH_PENDING: AtomicBool = AtomicBool::new(false);
 
 struct Style {
     enabled: bool,
@@ -65,10 +67,24 @@ enum Commands {
     #[command(hide = true)]
     Info(StatusArgs),
     Init,
+    #[command(hide = true)]
     InitPrompt,
     InstallSkill,
+    Setup(SetupArgs),
     #[command(external_subcommand)]
     External(Vec<OsString>),
+}
+
+#[derive(Args)]
+struct SetupArgs {
+    #[command(subcommand)]
+    command: SetupCommand,
+}
+
+#[derive(Subcommand)]
+enum SetupCommand {
+    /// Install shell prompt integration.
+    Prompt,
 }
 
 #[derive(Args)]
@@ -377,6 +393,7 @@ fn run() -> io::Result<()> {
             }
             Commands::InitPrompt => cmd_init_prompt(),
             Commands::InstallSkill => cmd_install_skill(),
+            Commands::Setup(args) => cmd_setup(&args),
             Commands::Leave | Commands::Detach => cmd_detach(),
             Commands::External(args) => cmd_external(args),
         };
@@ -505,6 +522,7 @@ fn cmd_new() -> io::Result<()> {
         style.muted("(Ctrl-\\ to exit)")
     );
 
+    let initial_winsize = terminal_winsize();
     let listener = UnixListener::bind(&record.socket)?;
     let master_pid = unsafe { libc::fork() };
     if master_pid < 0 {
@@ -514,7 +532,7 @@ fn cmd_new() -> io::Result<()> {
         unsafe {
             let _ = libc::setsid();
         }
-        let code = match master_loop(listener, &record, &shell) {
+        let code = match master_loop(listener, &record, &shell, initial_winsize.as_ref()) {
             Ok(()) => 0,
             Err(err) => {
                 eprintln!("hitch master: {err}");
@@ -531,9 +549,14 @@ fn cmd_new() -> io::Result<()> {
     process::exit(status);
 }
 
-fn master_loop(listener: UnixListener, record: &SessionRecord, shell: &str) -> io::Result<()> {
+fn master_loop(
+    listener: UnixListener,
+    record: &SessionRecord,
+    shell: &str,
+    initial_winsize: Option<&libc::winsize>,
+) -> io::Result<()> {
     listener.set_nonblocking(true)?;
-    let (pty_fd, child_pid) = fork_shell(shell, record)?;
+    let (pty_fd, child_pid) = fork_shell(shell, record, initial_winsize)?;
     fs::write(&record.pid_file, format!("{child_pid}\n"))?;
     let mut log = OpenOptions::new()
         .create(true)
@@ -659,14 +682,21 @@ fn master_loop(listener: UnixListener, record: &SessionRecord, shell: &str) -> i
     Ok(())
 }
 
-fn fork_shell(shell: &str, record: &SessionRecord) -> io::Result<(RawFd, libc::pid_t)> {
+fn fork_shell(
+    shell: &str,
+    record: &SessionRecord,
+    initial_winsize: Option<&libc::winsize>,
+) -> io::Result<(RawFd, libc::pid_t)> {
     let mut master: libc::c_int = -1;
+    let winsize_ptr = initial_winsize
+        .map(|ws| ws as *const libc::winsize as *mut libc::winsize)
+        .unwrap_or(std::ptr::null_mut());
     let pid = unsafe {
         libc::forkpty(
             &mut master,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            std::ptr::null_mut(),
+            winsize_ptr,
         )
     };
     if pid < 0 {
@@ -719,6 +749,7 @@ fn attach_socket(socket: &str, session_id: &str, log_path: Option<&str>) -> io::
     let mut stream = UnixStream::connect(socket)?;
     let original = terminal_raw()?;
     let _restore = TermRestore(original);
+    let _winch_restore = WinchRestore::install()?;
     let style = Style::stdout();
     let exit_message = || style.muted(format!("[hitch exited session {session_id}]"));
 
@@ -729,6 +760,8 @@ fn attach_socket(socket: &str, session_id: &str, log_path: Option<&str>) -> io::
     }
 
     loop {
+        flush_pending_winch(&mut stream)?;
+
         let stdin_fd = libc::STDIN_FILENO;
         let sock_fd = stream.as_raw_fd();
         let mut readfds = unsafe { mem::zeroed::<libc::fd_set>() };
@@ -749,6 +782,7 @@ fn attach_socket(socket: &str, session_id: &str, log_path: Option<&str>) -> io::
         if rc < 0 {
             let err = io::Error::last_os_error();
             if err.kind() == io::ErrorKind::Interrupted {
+                flush_pending_winch(&mut stream)?;
                 continue;
             }
             return Err(err);
@@ -859,9 +893,46 @@ impl Drop for TermRestore {
     }
 }
 
+struct WinchRestore(libc::sighandler_t);
+
+impl WinchRestore {
+    fn install() -> io::Result<Self> {
+        WINCH_PENDING.store(false, Ordering::SeqCst);
+        let previous = unsafe {
+            libc::signal(
+                libc::SIGWINCH,
+                handle_sigwinch as *const () as libc::sighandler_t,
+            )
+        };
+        if previous == libc::SIG_ERR {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(Self(previous))
+        }
+    }
+}
+
+impl Drop for WinchRestore {
+    fn drop(&mut self) {
+        unsafe {
+            libc::signal(libc::SIGWINCH, self.0);
+        }
+    }
+}
+
+extern "C" fn handle_sigwinch(_: libc::c_int) {
+    WINCH_PENDING.store(true, Ordering::SeqCst);
+}
+
+fn flush_pending_winch(stream: &mut UnixStream) -> io::Result<()> {
+    if WINCH_PENDING.swap(false, Ordering::SeqCst) {
+        send_winch(stream)?;
+    }
+    Ok(())
+}
+
 fn send_winch(stream: &mut UnixStream) -> io::Result<()> {
-    let mut ws = unsafe { mem::zeroed::<libc::winsize>() };
-    if unsafe { libc::ioctl(libc::STDIN_FILENO, libc::TIOCGWINSZ, &mut ws) } == 0 {
+    if let Some(ws) = terminal_winsize() {
         let bytes = unsafe {
             std::slice::from_raw_parts(
                 (&ws as *const libc::winsize).cast::<u8>(),
@@ -871,6 +942,18 @@ fn send_winch(stream: &mut UnixStream) -> io::Result<()> {
         send_packet(stream, MSG_WINCH, bytes)?;
     }
     Ok(())
+}
+
+fn terminal_winsize() -> Option<libc::winsize> {
+    let mut ws = unsafe { mem::zeroed::<libc::winsize>() };
+    if unsafe { libc::ioctl(libc::STDIN_FILENO, libc::TIOCGWINSZ, &mut ws) } == 0
+        && ws.ws_col > 0
+        && ws.ws_row > 0
+    {
+        Some(ws)
+    } else {
+        None
+    }
 }
 
 fn send_packet(stream: &mut UnixStream, typ: u8, payload: &[u8]) -> io::Result<()> {
@@ -1146,50 +1229,7 @@ fn cmd_kill_session(id: Option<&str>) -> io::Result<()> {
 }
 
 fn cmd_init_prompt() -> io::Result<()> {
-    print!(
-        r#"# hitch prompt integration
-if [ -n "${{ZSH_VERSION:-}}" ]; then
-  if (( $+functions[p10k] )); then
-    unset POWERLEVEL9K_HITCH_FOREGROUND POWERLEVEL9K_HITCH_BACKGROUND
-    unset POWERLEVEL9K_HITCH_LEFT_WHITESPACE POWERLEVEL9K_HITCH_RIGHT_WHITESPACE
-    unset POWERLEVEL9K_HITCH_LEFT_LEFT_WHITESPACE POWERLEVEL9K_HITCH_LEFT_RIGHT_WHITESPACE
-    unset POWERLEVEL9K_HITCH_RIGHT_LEFT_WHITESPACE POWERLEVEL9K_HITCH_RIGHT_RIGHT_WHITESPACE
-    function prompt_hitch() {{
-      [[ -n "${{HITCH_SESSION:-}}" ]] && p10k segment -t "%K{{236}}%F{{white}}h${{HITCH_SESSION}}%f%k"
-    }}
-    typeset -ga POWERLEVEL9K_LEFT_PROMPT_ELEMENTS
-    function _hitch_p10k_insert() {{
-      POWERLEVEL9K_LEFT_PROMPT_ELEMENTS=(${{POWERLEVEL9K_LEFT_PROMPT_ELEMENTS:#hitch}})
-      local insert_at=${{POWERLEVEL9K_LEFT_PROMPT_ELEMENTS[(i)newline]}}
-      if (( insert_at > ${{#POWERLEVEL9K_LEFT_PROMPT_ELEMENTS}} )); then
-        insert_at=${{POWERLEVEL9K_LEFT_PROMPT_ELEMENTS[(i)prompt_char]}}
-      fi
-      if (( insert_at > ${{#POWERLEVEL9K_LEFT_PROMPT_ELEMENTS}} )); then
-        POWERLEVEL9K_LEFT_PROMPT_ELEMENTS=($POWERLEVEL9K_LEFT_PROMPT_ELEMENTS hitch)
-      else
-        POWERLEVEL9K_LEFT_PROMPT_ELEMENTS=(
-          ${{POWERLEVEL9K_LEFT_PROMPT_ELEMENTS[1,insert_at-1]}}
-          hitch
-          ${{POWERLEVEL9K_LEFT_PROMPT_ELEMENTS[insert_at,-1]}}
-        )
-      fi
-    }}
-    _hitch_p10k_insert
-    unfunction _hitch_p10k_insert
-  else
-    function _hitch_prompt() {{
-      [[ -n "${{HITCH_SESSION:-}}" ]] && print -n " %K{{236}}%F{{white}}h${{HITCH_SESSION}}%f%k"
-    }}
-    PROMPT="$PROMPT"'$(_hitch_prompt)'
-  fi
-elif [ -n "${{BASH_VERSION:-}}" ]; then
-  function _hitch_prompt() {{
-    [[ -n "${{HITCH_SESSION:-}}" ]] && printf '\[\033[32m\]h%s\[\033[0m\] ' "$HITCH_SESSION"
-  }}
-  PS1='$(_hitch_prompt)'"$PS1"
-fi
-"#
-    );
+    println!("run `hitch setup prompt` to install prompt integration");
     Ok(())
 }
 
@@ -1218,6 +1258,278 @@ fn cmd_install_skill() -> io::Result<()> {
         )),
         Err(err) => Err(err),
     }
+}
+
+fn cmd_setup(args: &SetupArgs) -> io::Result<()> {
+    match args.command {
+        SetupCommand::Prompt => cmd_setup_prompt(),
+    }
+}
+
+fn cmd_setup_prompt() -> io::Result<()> {
+    let shell = detect_shell();
+    if shell == "zsh" {
+        return setup_zsh_family_prompt();
+    }
+
+    if shell == "bash" {
+        return setup_bash_prompt();
+    }
+
+    if shell == "fish" {
+        return setup_fish_prompt();
+    }
+
+    println!("unsupported shell: {shell}");
+    println!("manual prompt segment: show `h$HITCH_SESSION` when HITCH_SESSION is set");
+    Ok(())
+}
+
+fn detect_shell() -> String {
+    env::var("SHELL")
+        .ok()
+        .and_then(|shell| Path::new(&shell).file_name().map(|name| name.to_string_lossy().into()))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn home_file(name: &str) -> Option<PathBuf> {
+    env::var_os("HOME").map(|home| PathBuf::from(home).join(name))
+}
+
+fn setup_zsh_family_prompt() -> io::Result<()> {
+    setup_zsh_prompt()?;
+
+    if let Some(p10k_path) = home_file(".p10k.zsh").filter(|path| path.exists()) {
+        setup_p10k_prompt(&p10k_path)?;
+    }
+
+    println!("prompt configuration updated");
+    println!("restart existing terminals to pick up the prompt update");
+
+    Ok(())
+}
+
+fn setup_p10k_prompt(path: &Path) -> io::Result<()> {
+    let raw = fs::read_to_string(path)?;
+    let mut updated = ensure_p10k_left_segment(&raw)?;
+    updated = upsert_p10k_prompt_block(&updated)?;
+    if updated != raw {
+        let _backup = backup_file(path)?;
+        fs::write(path, updated)?;
+    }
+    Ok(())
+}
+
+fn setup_zsh_prompt() -> io::Result<()> {
+    let Some(path) = home_file(".zshrc") else {
+        return Err(io::Error::new(io::ErrorKind::NotFound, "HOME is not set"));
+    };
+    setup_rc_prompt(&path, zsh_prompt_block())
+}
+
+fn setup_bash_prompt() -> io::Result<()> {
+    let Some(path) = home_file(".bashrc") else {
+        return Err(io::Error::new(io::ErrorKind::NotFound, "HOME is not set"));
+    };
+    setup_rc_prompt(&path, bash_prompt_block())?;
+    println!("prompt configuration updated");
+    println!("restart existing terminals to pick up the prompt update");
+    Ok(())
+}
+
+fn setup_fish_prompt() -> io::Result<()> {
+    let Some(path) = home_file(".config/fish/conf.d/hitch.fish") else {
+        return Err(io::Error::new(io::ErrorKind::NotFound, "HOME is not set"));
+    };
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let raw = fs::read_to_string(&path).unwrap_or_default();
+    let updated = upsert_marked_block(&raw, fish_prompt_block());
+    if updated != raw {
+        if path.exists() {
+            let _backup = backup_file(&path)?;
+        }
+        fs::write(&path, updated)?;
+    }
+    println!("prompt configuration updated");
+    println!("restart existing fish terminals to pick up the prompt update");
+    Ok(())
+}
+
+fn setup_rc_prompt(path: &Path, block: &str) -> io::Result<()> {
+    let raw = fs::read_to_string(path).unwrap_or_default();
+    let updated = upsert_marked_block(&raw, block);
+    if updated != raw {
+        if path.exists() {
+            let _backup = backup_file(path)?;
+        }
+        fs::write(path, updated)?;
+    }
+    Ok(())
+}
+
+fn backup_file(path: &Path) -> io::Result<PathBuf> {
+    let dir = state_dir().join("backups");
+    fs::create_dir_all(&dir)?;
+    let backup = dir.join(format!(
+        "{}.{}",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("config"),
+        now_epoch()
+    ));
+    fs::copy(path, &backup)?;
+    Ok(backup)
+}
+
+fn upsert_marked_block(raw: &str, block: &str) -> String {
+    upsert_marked_block_before(raw, block, "")
+}
+
+fn upsert_marked_block_before(raw: &str, block: &str, anchor: &str) -> String {
+    const START: &str = "# >>> hitch prompt integration >>>";
+    const END: &str = "# <<< hitch prompt integration <<<";
+
+    if let Some(start) = raw.find(START) {
+        if let Some(end_rel) = raw[start..].find(END) {
+            let line_start = raw[..start].rfind('\n').map(|index| index + 1).unwrap_or(0);
+            let replace_start = if raw[line_start..start].trim().is_empty() {
+                line_start
+            } else {
+                start
+            };
+            let end = start + end_rel + END.len();
+            let mut out = String::new();
+            out.push_str(&raw[..replace_start]);
+            out.push_str(block.trim_end());
+            out.push_str(&raw[end..]);
+            return out;
+        }
+    }
+
+    if !anchor.is_empty() {
+        if let Some(index) = raw.find(anchor) {
+            let mut out = String::new();
+            out.push_str(raw[..index].trim_end());
+            out.push_str("\n\n");
+            out.push_str(block.trim_end());
+            out.push_str("\n\n");
+            out.push_str(&raw[index..]);
+            return out;
+        }
+    }
+
+    let mut out = raw.trim_end().to_string();
+    if !out.is_empty() {
+        out.push_str("\n\n");
+    }
+    out.push_str(block.trim_end());
+    out.push('\n');
+    out
+}
+
+fn upsert_p10k_prompt_block(raw: &str) -> io::Result<String> {
+    if raw.contains("# >>> hitch prompt integration >>>") {
+        return Ok(upsert_marked_block(raw, p10k_prompt_block()));
+    }
+
+    for anchor in [
+        "  # Example of a user-defined prompt segment.",
+        "  # Transient prompt works similarly",
+        "  # If p10k is already loaded, reload configuration.",
+    ] {
+        if raw.contains(anchor) {
+            return Ok(upsert_marked_block_before(raw, p10k_prompt_block(), anchor));
+        }
+    }
+
+    Err(io::Error::other(
+        "could not find a safe insertion point in ~/.p10k.zsh",
+    ))
+}
+
+fn ensure_p10k_left_segment(raw: &str) -> io::Result<String> {
+    let Some(start) = raw.find("POWERLEVEL9K_LEFT_PROMPT_ELEMENTS=(") else {
+        return Err(io::Error::other(
+            "could not find POWERLEVEL9K_LEFT_PROMPT_ELEMENTS in ~/.p10k.zsh",
+        ));
+    };
+    let Some(end_rel) = raw[start..].find("\n  )") else {
+        return Err(io::Error::other(
+            "could not parse POWERLEVEL9K_LEFT_PROMPT_ELEMENTS in ~/.p10k.zsh",
+        ));
+    };
+    let end = start + end_rel;
+    let block = &raw[start..end];
+    let mut lines: Vec<String> = block.lines().map(str::to_string).collect();
+    lines.retain(|line| line.split('#').next().unwrap_or("").trim() != "hitch");
+
+    let insert_at = lines
+        .iter()
+        .position(|line| line.split('#').next().unwrap_or("").trim() == "newline")
+        .unwrap_or(lines.len());
+    lines.insert(
+        insert_at,
+        "    hitch                   # hitch session id".to_string(),
+    );
+
+    let mut out = String::new();
+    out.push_str(&raw[..start]);
+    out.push_str(&lines.join("\n"));
+    out.push_str(&raw[end..]);
+    Ok(out)
+}
+
+fn p10k_prompt_block() -> &'static str {
+    r#"  # >>> hitch prompt integration >>>
+  function prompt_hitch() {
+    [[ -n "${HITCH_SESSION:-}" ]] && p10k segment -f 2 -t "h${HITCH_SESSION}"
+  }
+  # <<< hitch prompt integration <<<"#
+}
+
+fn zsh_prompt_block() -> &'static str {
+    r#"# >>> hitch prompt integration >>>
+function _hitch_prompt_segment() {
+  [[ -n "${HITCH_SESSION:-}" ]] && print -n "%F{2}h${HITCH_SESSION}%f "
+}
+
+if [[ -z "${HITCH_PROMPT_INSTALLED:-}" && -z "${POWERLEVEL9K_LEFT_PROMPT_ELEMENTS:-}" ]]; then
+  HITCH_PROMPT_INSTALLED=1
+  PROMPT='$(_hitch_prompt_segment)'"$PROMPT"
+fi
+# <<< hitch prompt integration <<<"#
+}
+
+fn bash_prompt_block() -> &'static str {
+    r#"# >>> hitch prompt integration >>>
+_hitch_prompt_segment() {
+  [[ -n "${HITCH_SESSION:-}" ]] && printf '\[\033[32m\]h%s\[\033[0m\] ' "$HITCH_SESSION"
+}
+
+if [[ -z "${HITCH_PROMPT_INSTALLED:-}" ]]; then
+  HITCH_PROMPT_INSTALLED=1
+  PS1='$(_hitch_prompt_segment)'"$PS1"
+fi
+# <<< hitch prompt integration <<<"#
+}
+
+fn fish_prompt_block() -> &'static str {
+    r#"# >>> hitch prompt integration >>>
+if not functions -q __hitch_original_fish_prompt
+    functions -c fish_prompt __hitch_original_fish_prompt
+end
+
+function fish_prompt
+    if set -q HITCH_SESSION
+        set_color green
+        printf 'h%s ' $HITCH_SESSION
+        set_color normal
+    end
+    __hitch_original_fish_prompt
+end
+# <<< hitch prompt integration <<<"#
 }
 
 fn cmd_detach() -> io::Result<()> {

@@ -22,6 +22,12 @@ Start a hitch-backed shell:
 hitch
 ```
 
+Show the current hitch session in your shell prompt:
+
+```sh
+hitch setup prompt
+```
+
 List sessions visible from the current project:
 
 ```sh
