@@ -65,6 +65,7 @@ enum Commands {
     #[command(hide = true)]
     Info(StatusArgs),
     Init,
+    InitPrompt,
     InstallSkill,
     #[command(external_subcommand)]
     External(Vec<OsString>),
@@ -374,6 +375,7 @@ fn run() -> io::Result<()> {
                 println!("# Run \"hitch\" when you want a terminal to be visible to agents.");
                 Ok(())
             }
+            Commands::InitPrompt => cmd_init_prompt(),
             Commands::InstallSkill => cmd_install_skill(),
             Commands::Leave | Commands::Detach => cmd_detach(),
             Commands::External(args) => cmd_external(args),
@@ -1140,6 +1142,54 @@ fn cmd_kill_session(id: Option<&str>) -> io::Result<()> {
         }
     }
     let _ = fs::remove_dir_all(session_path(&session.id));
+    Ok(())
+}
+
+fn cmd_init_prompt() -> io::Result<()> {
+    print!(
+        r#"# hitch prompt integration
+if [ -n "${{ZSH_VERSION:-}}" ]; then
+  if (( $+functions[p10k] )); then
+    unset POWERLEVEL9K_HITCH_FOREGROUND POWERLEVEL9K_HITCH_BACKGROUND
+    unset POWERLEVEL9K_HITCH_LEFT_WHITESPACE POWERLEVEL9K_HITCH_RIGHT_WHITESPACE
+    unset POWERLEVEL9K_HITCH_LEFT_LEFT_WHITESPACE POWERLEVEL9K_HITCH_LEFT_RIGHT_WHITESPACE
+    unset POWERLEVEL9K_HITCH_RIGHT_LEFT_WHITESPACE POWERLEVEL9K_HITCH_RIGHT_RIGHT_WHITESPACE
+    function prompt_hitch() {{
+      [[ -n "${{HITCH_SESSION:-}}" ]] && p10k segment -t "%K{{236}}%F{{white}}h${{HITCH_SESSION}}%f%k"
+    }}
+    typeset -ga POWERLEVEL9K_LEFT_PROMPT_ELEMENTS
+    function _hitch_p10k_insert() {{
+      POWERLEVEL9K_LEFT_PROMPT_ELEMENTS=(${{POWERLEVEL9K_LEFT_PROMPT_ELEMENTS:#hitch}})
+      local insert_at=${{POWERLEVEL9K_LEFT_PROMPT_ELEMENTS[(i)newline]}}
+      if (( insert_at > ${{#POWERLEVEL9K_LEFT_PROMPT_ELEMENTS}} )); then
+        insert_at=${{POWERLEVEL9K_LEFT_PROMPT_ELEMENTS[(i)prompt_char]}}
+      fi
+      if (( insert_at > ${{#POWERLEVEL9K_LEFT_PROMPT_ELEMENTS}} )); then
+        POWERLEVEL9K_LEFT_PROMPT_ELEMENTS=($POWERLEVEL9K_LEFT_PROMPT_ELEMENTS hitch)
+      else
+        POWERLEVEL9K_LEFT_PROMPT_ELEMENTS=(
+          ${{POWERLEVEL9K_LEFT_PROMPT_ELEMENTS[1,insert_at-1]}}
+          hitch
+          ${{POWERLEVEL9K_LEFT_PROMPT_ELEMENTS[insert_at,-1]}}
+        )
+      fi
+    }}
+    _hitch_p10k_insert
+    unfunction _hitch_p10k_insert
+  else
+    function _hitch_prompt() {{
+      [[ -n "${{HITCH_SESSION:-}}" ]] && print -n " %K{{236}}%F{{white}}h${{HITCH_SESSION}}%f%k"
+    }}
+    PROMPT="$PROMPT"'$(_hitch_prompt)'
+  fi
+elif [ -n "${{BASH_VERSION:-}}" ]; then
+  function _hitch_prompt() {{
+    [[ -n "${{HITCH_SESSION:-}}" ]] && printf '\[\033[32m\]h%s\[\033[0m\] ' "$HITCH_SESSION"
+  }}
+  PS1='$(_hitch_prompt)'"$PS1"
+fi
+"#
+    );
     Ok(())
 }
 
