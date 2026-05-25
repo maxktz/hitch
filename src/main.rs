@@ -997,7 +997,6 @@ fn cmd_list(args: &ListArgs) -> io::Result<()> {
     let style = Style::stdout();
     for session in sessions {
         let state = read_session_state(&session.id);
-        let attached = is_attached(&session.socket);
         let cwd = current_dir_for_session(&session, &state);
         let activity = state
             .last_activity_at
@@ -1006,43 +1005,54 @@ fn cmd_list(args: &ListArgs) -> io::Result<()> {
 
         println!("----- terminal {} -----", style.id(&session.id));
         println!("current dir: {}", style.path(shorten_home(&cwd)));
+        println!("last input was {activity}");
         if state.command_running {
             let duration = state
                 .command_started_at
                 .map(running_for)
                 .unwrap_or_else(|| "unknown time".to_string());
-            println!("actively running for {}", style.command(duration));
+            println!("process is running for {}", style.command(duration));
         } else {
             println!("no actively running commands");
         }
-        println!(
-            "terminal last active {} ({})",
-            activity,
-            if attached {
-                "currently shared"
-            } else {
-                "not shared"
-            }
-        );
 
+        let mut printed_output = false;
         if state.command_running {
-            let head =
-                rendered_head_lines(&active_output_path(&session.id), ACTIVE_COMMAND_HEAD_LINES);
-            if !head.is_empty() {
+            let head = list_head_lines(&active_output_path(&session.id), ACTIVE_COMMAND_HEAD_LINES);
+            let tail = list_tail_lines(&session.log, args.tail);
+            if !head.is_empty() && !contains_line_sequence(&tail, &head) {
                 println!();
-                println!("--- active command output head ({} lines) ---", head.len());
+                println!("--- active output head ({} lines) ---", head.len());
                 for line in head {
                     println!("{line}");
                 }
+                printed_output = true;
+            }
+            if !tail.is_empty() {
+                println!();
+                println!("--- recent output ({} lines) ---", tail.len());
+                for line in tail {
+                    println!("{line}");
+                }
+                printed_output = true;
+            }
+        } else {
+            let tail = list_tail_lines(&session.log, args.tail);
+            if !tail.is_empty() {
+                println!();
+                println!("--- recent output ({} lines) ---", tail.len());
+                for line in tail {
+                    println!("{line}");
+                }
+                printed_output = true;
             }
         }
-
-        let tail = rendered_tail_lines(&session.log, args.tail);
-        if !tail.is_empty() {
+        if !printed_output {
             println!();
-            println!("--- recent output ({} lines) ---", tail.len());
-            for line in tail {
-                println!("{line}");
+            if state.command_running {
+                println!("no visible output yet");
+            } else {
+                println!("no visible output");
             }
         }
         println!();
@@ -1599,22 +1609,6 @@ fn read_pid(path: &str) -> Option<i32> {
     fs::read_to_string(path).ok()?.trim().parse().ok()
 }
 
-fn is_attached(socket: &str) -> bool {
-    fs::metadata(socket)
-        .map(|m| m.permissions().mode() & 0o100 != 0)
-        .unwrap_or(false)
-}
-
-trait PermissionsExt {
-    fn mode(&self) -> u32;
-}
-
-impl PermissionsExt for fs::Permissions {
-    fn mode(&self) -> u32 {
-        std::os::unix::fs::PermissionsExt::mode(self)
-    }
-}
-
 fn read_session_state(id: &str) -> SessionState {
     let path = session_path(id).join("state.json");
     let Ok(raw) = fs::read_to_string(path) else {
@@ -1689,16 +1683,58 @@ fn rendered_log(path: &str) -> String {
     render_terminal_text(text.as_bytes())
 }
 
-fn rendered_head_lines(path: &Path, limit: usize) -> Vec<String> {
+fn list_head_lines(path: &Path, limit: usize) -> Vec<String> {
     let Ok(text) = fs::read_to_string(path) else {
         return Vec::new();
     };
     let text = render_terminal_text(text.as_bytes());
-    text.lines()
+    normalize_list_lines(text.lines().map(str::to_string).take(limit).collect())
+}
+
+fn list_tail_lines(path: &str, limit: usize) -> Vec<String> {
+    let Ok(text) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let text = render_terminal_text(text.as_bytes());
+    let lines = text.lines().map(str::to_string).collect::<Vec<_>>();
+    let start = lines.len().saturating_sub(limit);
+    normalize_list_lines(lines.into_iter().skip(start).collect())
+}
+
+fn normalize_list_lines(lines: Vec<String>) -> Vec<String> {
+    trim_visual_empty_edges(lines)
+        .into_iter()
         .filter(|line| !line.trim().is_empty())
-        .take(limit)
-        .map(str::to_string)
         .collect()
+}
+
+fn trim_visual_empty_edges(lines: Vec<String>) -> Vec<String> {
+    let start = lines
+        .iter()
+        .position(|line| !line.trim().is_empty())
+        .unwrap_or(lines.len());
+    let end = lines
+        .iter()
+        .rposition(|line| !line.trim().is_empty())
+        .map(|index| index + 1)
+        .unwrap_or(start);
+    lines
+        .into_iter()
+        .skip(start)
+        .take(end.saturating_sub(start))
+        .collect()
+}
+
+fn contains_line_sequence(lines: &[String], sequence: &[String]) -> bool {
+    if sequence.is_empty() {
+        return true;
+    }
+    if sequence.len() > lines.len() {
+        return false;
+    }
+    lines
+        .windows(sequence.len())
+        .any(|window| window == sequence)
 }
 
 fn rendered_tail_lines(path: &str, limit: usize) -> Vec<String> {
