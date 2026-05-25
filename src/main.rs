@@ -109,6 +109,22 @@ struct CapturePaneArgs {
     print: bool,
     #[arg(short = 'S', allow_hyphen_values = true)]
     start: Option<isize>,
+    #[arg(short = 'E', allow_hyphen_values = true)]
+    end: Option<isize>,
+    #[arg(short = 'e')]
+    escapes: bool,
+    #[arg(short = 'C', hide = true)]
+    _escape_non_printable: bool,
+    #[arg(short = 'J', hide = true)]
+    _join_wrapped: bool,
+    #[arg(short = 'N', hide = true)]
+    _preserve_trailing_spaces: bool,
+    #[arg(short = 'T', hide = true)]
+    _trim_trailing_empty: bool,
+    #[arg(short = 'a', hide = true)]
+    _alternate_screen: bool,
+    #[arg(short = 'q', hide = true)]
+    _quiet: bool,
     #[arg(long, hide = true)]
     tail: Option<usize>,
     #[arg(long)]
@@ -1172,17 +1188,18 @@ fn key_to_bytes(key: &str) -> Vec<u8> {
 
 fn cmd_capture_pane(args: &CapturePaneArgs) -> io::Result<()> {
     let session = find_session(Some(&args.target))?;
+    let raw = args.raw || args.escapes;
     if let Some(start) = args.start {
-        let lines = if args.raw {
-            raw_lines_from_start(&session.log, start)
+        let lines = if raw {
+            raw_lines_range(&session.log, start, args.end)
         } else {
-            rendered_lines_from_start(&session.log, start)
+            rendered_lines_range(&session.log, start, args.end)
         };
         for line in lines {
             println!("{line}");
         }
     } else if let Some(tail) = args.tail {
-        let lines = if args.raw {
+        let lines = if raw {
             raw_tail_lines(&session.log, tail)
         } else {
             rendered_tail_lines(&session.log, tail)
@@ -1191,7 +1208,7 @@ fn cmd_capture_pane(args: &CapturePaneArgs) -> io::Result<()> {
             println!("{line}");
         }
     } else {
-        let text = if args.raw {
+        let text = if raw {
             fs::read_to_string(session.log).unwrap_or_default()
         } else {
             rendered_log(&session.log)
@@ -1770,29 +1787,42 @@ fn rendered_tail_lines(path: &str, limit: usize) -> Vec<String> {
         .collect()
 }
 
-fn rendered_lines_from_start(path: &str, start: isize) -> Vec<String> {
+fn rendered_lines_range(path: &str, start: isize, end: Option<isize>) -> Vec<String> {
     let Ok(text) = fs::read_to_string(path) else {
         return Vec::new();
     };
     let text = render_terminal_text(text.as_bytes());
-    lines_from_start(&text, start)
+    lines_range(&text, start, end)
 }
 
-fn raw_lines_from_start(path: &str, start: isize) -> Vec<String> {
+fn raw_lines_range(path: &str, start: isize, end: Option<isize>) -> Vec<String> {
     let Ok(text) = fs::read_to_string(path) else {
         return Vec::new();
     };
-    lines_from_start(&text, start)
+    lines_range(&text, start, end)
 }
 
-fn lines_from_start(text: &str, start: isize) -> Vec<String> {
+fn lines_range(text: &str, start: isize, end: Option<isize>) -> Vec<String> {
     let lines = text.lines().collect::<Vec<_>>();
-    let index = if start < 0 {
-        lines.len().saturating_sub(start.unsigned_abs())
+    let start = line_index(lines.len(), start);
+    let end = end
+        .map(|end| line_index(lines.len(), end).saturating_add(1))
+        .unwrap_or(lines.len())
+        .min(lines.len());
+    lines
+        .into_iter()
+        .skip(start)
+        .take(end.saturating_sub(start))
+        .map(str::to_string)
+        .collect()
+}
+
+fn line_index(len: usize, index: isize) -> usize {
+    if index < 0 {
+        len.saturating_sub(index.unsigned_abs())
     } else {
-        start as usize
-    };
-    lines.into_iter().skip(index).map(str::to_string).collect()
+        (index as usize).min(len)
+    }
 }
 
 fn raw_tail_lines(path: &str, limit: usize) -> Vec<String> {
