@@ -1,6 +1,6 @@
 ---
 name: hitch
-description: Use when you need to inspect or control a terminal session the user already has open — before starting a dev server, watcher, tunnel, REPL, build, or log tail (to avoid duplicates), or to read pane output and send keys to an existing session. Covers hitch list, capture-pane, send-keys, and session ids.
+description: Use when the `hitch` CLI (github.com/maxktz/hitch) is available and you need to inspect or control a terminal session the user already has open — before starting a dev server, watcher, tunnel, REPL, build, or log tail (to avoid duplicates), or to read pane output and send keys to an existing session via `hitch list`, `capture-pane`, and `send-keys`. Requires the hitch CLI; does not work standalone.
 ---
 
 # Hitch
