@@ -75,8 +75,6 @@ struct ListArgs {
     #[arg(long)]
     all: bool,
     #[arg(long)]
-    json: bool,
-    #[arg(long)]
     dir: Option<PathBuf>,
     #[arg(long, default_value_t = 20)]
     tail: usize,
@@ -101,7 +99,9 @@ struct CapturePaneArgs {
     target: String,
     #[arg(short = 'p')]
     print: bool,
-    #[arg(long)]
+    #[arg(short = 'S', allow_hyphen_values = true)]
+    start: Option<isize>,
+    #[arg(long, hide = true)]
     tail: Option<usize>,
     #[arg(long)]
     raw: bool,
@@ -935,15 +935,6 @@ fn cmd_list(args: &ListArgs) -> io::Result<()> {
 
     sessions.sort_by_key(|session| session.id.parse::<u32>().unwrap_or(u32::MAX));
 
-    if args.json {
-        let values = sessions
-            .iter()
-            .map(|s| session_json(s, args))
-            .collect::<Vec<_>>();
-        println!("{}", serde_json::to_string_pretty(&values).unwrap());
-        return Ok(());
-    }
-
     if sessions.is_empty() {
         let style = Style::stdout();
         println!("{} {}", style.brand(), style.muted("no matching sessions"));
@@ -967,7 +958,11 @@ fn cmd_list(args: &ListArgs) -> io::Result<()> {
 
         println!("----- session {} -----", style.id(&session.id));
         println!("current dir: {}", style.path(shorten_home(&cwd)));
-        println!("active command: {}", style.command(command));
+        if state.command_running {
+            println!("actively running: {}", style.command(command));
+        } else {
+            println!("no actively running commands");
+        }
         println!(
             "session last active {} ({})",
             activity,
@@ -979,11 +974,8 @@ fn cmd_list(args: &ListArgs) -> io::Result<()> {
         );
 
         if state.command_running {
-            let head = head_lines_path(
-                &active_output_path(&session.id),
-                ACTIVE_COMMAND_HEAD_LINES,
-                false,
-            );
+            let head =
+                rendered_head_lines(&active_output_path(&session.id), ACTIVE_COMMAND_HEAD_LINES);
             if !head.is_empty() {
                 println!();
                 println!("--- active command output head ({} lines) ---", head.len());
@@ -993,7 +985,7 @@ fn cmd_list(args: &ListArgs) -> io::Result<()> {
             }
         }
 
-        let tail = tail_lines_path(&session.log, args.tail, false);
+        let tail = rendered_tail_lines(&session.log, args.tail);
         if !tail.is_empty() {
             println!();
             println!("--- recent output ({} lines) ---", tail.len());
@@ -1029,28 +1021,6 @@ fn read_sessions() -> io::Result<Vec<SessionRecord>> {
         }
     }
     Ok(records)
-}
-
-fn session_json(session: &SessionRecord, args: &ListArgs) -> serde_json::Value {
-    let state = read_session_state(&session.id);
-    serde_json::json!({
-        "session": session.id,
-        "dir": current_dir_for_session(session, &state),
-        "activeCommand": state.active_command,
-        "commandRunning": state.command_running,
-        "running": Path::new(&session.socket).exists(),
-        "attached": is_attached(&session.socket),
-        "pid": read_pid(&session.pid_file),
-        "lastActivity": state.last_activity_at.map(time_ago),
-        "output": {
-            "activeHead": if state.command_running {
-                head_lines_path(&active_output_path(&session.id), ACTIVE_COMMAND_HEAD_LINES, false)
-            } else {
-                Vec::new()
-            },
-            "tail": tail_lines_path(&session.log, args.tail, false)
-        }
-    })
 }
 
 fn find_session(id: Option<&str>) -> io::Result<SessionRecord> {
@@ -1124,19 +1094,34 @@ fn key_to_bytes(key: &str) -> Vec<u8> {
 
 fn cmd_capture_pane(args: &CapturePaneArgs) -> io::Result<()> {
     let session = find_session(Some(&args.target))?;
-    let text = fs::read_to_string(session.log).unwrap_or_default();
-    let text = if args.raw {
-        text
-    } else {
-        strip_ansi(&text).replace('\r', "")
-    };
-    if let Some(tail) = args.tail {
-        let lines = text.lines().rev().take(tail).collect::<Vec<_>>();
-        for line in lines.into_iter().rev() {
+    if let Some(start) = args.start {
+        let lines = if args.raw {
+            raw_lines_from_start(&session.log, start)
+        } else {
+            rendered_lines_from_start(&session.log, start)
+        };
+        for line in lines {
+            println!("{line}");
+        }
+    } else if let Some(tail) = args.tail {
+        let lines = if args.raw {
+            raw_tail_lines(&session.log, tail)
+        } else {
+            rendered_tail_lines(&session.log, tail)
+        };
+        for line in lines {
             println!("{line}");
         }
     } else {
+        let text = if args.raw {
+            fs::read_to_string(session.log).unwrap_or_default()
+        } else {
+            rendered_log(&session.log)
+        };
         print!("{text}");
+        if !text.is_empty() && !text.ends_with('\n') {
+            println!();
+        }
     }
     Ok(())
 }
@@ -1291,11 +1276,18 @@ fn time_ago(timestamp: u64) -> String {
     }
 }
 
-fn head_lines_path(path: &Path, limit: usize, raw: bool) -> Vec<String> {
+fn rendered_log(path: &str) -> String {
+    let Ok(text) = fs::read_to_string(path) else {
+        return String::new();
+    };
+    render_terminal_text(text.as_bytes())
+}
+
+fn rendered_head_lines(path: &Path, limit: usize) -> Vec<String> {
     let Ok(text) = fs::read_to_string(path) else {
         return Vec::new();
     };
-    let text = if raw { text } else { clean_list_output(&text) };
+    let text = render_terminal_text(text.as_bytes());
     text.lines()
         .filter(|line| !line.trim().is_empty())
         .take(limit)
@@ -1303,11 +1295,11 @@ fn head_lines_path(path: &Path, limit: usize, raw: bool) -> Vec<String> {
         .collect()
 }
 
-fn tail_lines_path(path: &str, limit: usize, raw: bool) -> Vec<String> {
+fn rendered_tail_lines(path: &str, limit: usize) -> Vec<String> {
     let Ok(text) = fs::read_to_string(path) else {
         return Vec::new();
     };
-    let text = if raw { text } else { clean_list_output(&text) };
+    let text = render_terminal_text(text.as_bytes());
     text.lines()
         .filter(|line| !line.trim().is_empty())
         .rev()
@@ -1319,8 +1311,43 @@ fn tail_lines_path(path: &str, limit: usize, raw: bool) -> Vec<String> {
         .collect()
 }
 
-fn clean_list_output(value: &str) -> String {
-    render_terminal_text(value.as_bytes())
+fn rendered_lines_from_start(path: &str, start: isize) -> Vec<String> {
+    let Ok(text) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let text = render_terminal_text(text.as_bytes());
+    lines_from_start(&text, start)
+}
+
+fn raw_lines_from_start(path: &str, start: isize) -> Vec<String> {
+    let Ok(text) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    lines_from_start(&text, start)
+}
+
+fn lines_from_start(text: &str, start: isize) -> Vec<String> {
+    let lines = text.lines().collect::<Vec<_>>();
+    let index = if start < 0 {
+        lines.len().saturating_sub(start.unsigned_abs())
+    } else {
+        start as usize
+    };
+    lines.into_iter().skip(index).map(str::to_string).collect()
+}
+
+fn raw_tail_lines(path: &str, limit: usize) -> Vec<String> {
+    let Ok(text) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    text.lines()
+        .rev()
+        .take(limit)
+        .map(str::to_string)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
 }
 
 fn foreground_pgrp(fd: RawFd) -> Option<i32> {
@@ -1561,42 +1588,4 @@ fn parse_csi_params(bytes: &[u8]) -> Vec<u16> {
         .split(';')
         .filter_map(|part| part.parse::<u16>().ok())
         .collect()
-}
-
-fn strip_ansi(value: &str) -> String {
-    let bytes = value.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == 0x1b {
-            if i + 1 < bytes.len() && bytes[i + 1] == b']' {
-                i += 2;
-                while i < bytes.len() && bytes[i] != 0x07 {
-                    if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'\\' {
-                        i += 2;
-                        break;
-                    }
-                    i += 1;
-                }
-                if i < bytes.len() && bytes[i] == 0x07 {
-                    i += 1;
-                }
-                continue;
-            }
-            i += 2;
-            while i < bytes.len() {
-                let b = bytes[i];
-                i += 1;
-                if (0x40..=0x7e).contains(&b) {
-                    break;
-                }
-            }
-            continue;
-        }
-        if bytes[i] >= 0x20 || bytes[i] == b'\n' || bytes[i] == b'\t' {
-            out.push(bytes[i]);
-        }
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }

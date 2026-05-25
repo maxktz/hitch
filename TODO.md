@@ -1,5 +1,6 @@
 - proper installation commands
   - global install
+- versioning and updates
 - make head / tail outputs deduplicate in case they show same things
 - some status bar / prompt on edge to know if hitch is active at a time
 

@@ -1,91 +1,71 @@
-# Hitch Terminal Sessions
+# Hitch
 
-Use this skill when a task may involve terminal state the user already has open: dev servers, test watchers, tunnels, REPLs, build processes, logs, or any long-running command.
+Use `hitch` to inspect and control terminal sessions the user already has open.
 
-`hitch` makes user terminals visible and controllable through lightweight sessions. Prefer reusing an existing matching session over starting duplicate processes.
+You can reuse your experience with `tmux` for the agent-facing commands: `capture-pane` and `send-keys` intentionally mirror tmux-style workflows.
 
-Install this skill with:
-
-```sh
-hitch install-skill
-```
-
-## Discovery
-
-Before starting any dev server, tunnel, watcher, or long-running process, run:
+Before starting a dev server, watcher, tunnel, REPL, build, or log tail, check for an existing session:
 
 ```sh
 hitch list
 ```
 
-Use structured output when you need to parse sessions programmatically:
+Use `hitch list --all` only when you intentionally need sessions outside the current project. Plain `hitch list` is project-scoped.
+
+If `hitch list` shows the needed server, watcher, tunnel, REPL, or log already running, use that session instead of starting a duplicate. Use the exact numeric session id from `hitch list`.
+
+Session ids are always numbers. If the user says "hitch 2", "session 2", or "terminal 2", they probably mean hitch session id `2`.
+
+Read output:
 
 ```sh
-hitch list --json
+hitch capture-pane -t <session> -p -S -100
 ```
 
-Use global discovery only when you intentionally need sessions outside the current project:
+Send a command to an idle shell:
 
 ```sh
-hitch list --all
+hitch send-keys -t <session> C-u "command" Enter
 ```
 
-`hitch list` is scoped to the current directory by default. A session matches if it was created in that directory tree or if its current shell/process directory is in that directory tree.
+When sending commands, prefer starting with `C-u`; it clears any partially typed prompt input before sending the command.
 
-## Choosing A Session
+Before sending normal commands, check `hitch list`. If the session is actively running something, only interrupt/restart it when the user asked for that or it is clearly required.
 
-Prefer sessions with:
-
-- Matching `current dir`
-- Relevant `active command`
-- Recent output showing the server, watcher, REPL, or logs you need
-- A recent `session last active` time
-
-If a matching active process already exists, do not start a duplicate.
-
-Use the exact numeric session id from `hitch list`. Do not guess ids.
-
-## Interacting
-
-Send keys or commands into a session:
-
-```sh
-hitch send-keys -t <session> "command" Enter
-```
-
-Common keys:
+Interrupt only when safe or requested:
 
 ```sh
 hitch send-keys -t <session> C-c
-hitch send-keys -t <session> Enter
-hitch send-keys -t <session> C-u
 ```
 
-Read session output:
+If unsure, inspect output first:
 
 ```sh
-hitch capture-pane -t <session> -p
+hitch capture-pane -t <session> -p -S -100
 ```
 
-Join a session only when you need an interactive terminal view:
+Join interactively only when necessary:
 
 ```sh
 hitch join <session>
 ```
 
-Leave a joined session:
+## Patterns
+
+Restart a dev server in the session that was already running it:
 
 ```sh
-hitch leave
+hitch send-keys -t 2 C-c C-u "npm run dev" Enter
 ```
 
-`attach` and `detach` are supported aliases for agents familiar with tmux, but prefer `join` and `leave` in user-facing explanations.
+Inspect recent logs before acting:
 
-## Rules
+```sh
+hitch capture-pane -t 2 -p -S -100
+```
 
-- Always run `hitch list` before starting long-running local processes.
-- Reuse matching sessions instead of spawning duplicates.
-- Use `hitch list --all` only for deliberate cross-project lookup.
-- Prefer `send-keys` and `capture-pane` over opening a new terminal.
-- Do not kill or interrupt a session unless the user asked or the task clearly requires it.
-- If session output is ambiguous, inspect with `capture-pane` before acting.
+Run a command in an idle shell:
+
+```sh
+hitch send-keys -t 2 C-u "npm test" Enter
+```
