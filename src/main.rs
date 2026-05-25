@@ -998,11 +998,6 @@ fn cmd_list(args: &ListArgs) -> io::Result<()> {
     for session in sessions {
         let state = read_session_state(&session.id);
         let attached = is_attached(&session.socket);
-        let command = state
-            .active_command
-            .as_deref()
-            .filter(|command| !command.is_empty())
-            .unwrap_or("idle shell");
         let cwd = current_dir_for_session(&session, &state);
         let activity = state
             .last_activity_at
@@ -1012,7 +1007,11 @@ fn cmd_list(args: &ListArgs) -> io::Result<()> {
         println!("----- terminal {} -----", style.id(&session.id));
         println!("current dir: {}", style.path(shorten_home(&cwd)));
         if state.command_running {
-            println!("actively running: {}", style.command(command));
+            let duration = state
+                .command_started_at
+                .map(running_for)
+                .unwrap_or_else(|| "unknown time".to_string());
+            println!("actively running for {}", style.command(duration));
         } else {
             println!("no actively running commands");
         }
@@ -1667,6 +1666,19 @@ fn time_ago(timestamp: u64) -> String {
         format!("{}h ago", elapsed / 60 / 60)
     } else {
         format!("{}d ago", elapsed / 60 / 60 / 24)
+    }
+}
+
+fn running_for(started_at: u64) -> String {
+    let elapsed = now_epoch().saturating_sub(started_at);
+    if elapsed < 60 {
+        format!("{elapsed}s")
+    } else if elapsed < 60 * 60 {
+        format!("{}m {}s", elapsed / 60, elapsed % 60)
+    } else if elapsed < 60 * 60 * 24 {
+        format!("{}h {:02}m", elapsed / 60 / 60, (elapsed / 60) % 60)
+    } else {
+        format!("{}d {}h", elapsed / 60 / 60 / 24, (elapsed / 60 / 60) % 24)
     }
 }
 
