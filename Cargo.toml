@@ -1,6 +1,6 @@
 [package]
 name = "hitch"
-version = "0.0.1-beta.0"
+version = "0.0.2"
 edition = "2024"
 
 [dependencies]
