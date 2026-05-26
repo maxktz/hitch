@@ -21,7 +21,6 @@ const MSG_ATTACH: u8 = 1;
 const MSG_DETACH: u8 = 2;
 const MSG_WINCH: u8 = 3;
 const MSG_DETACH_SESSION: u8 = 4;
-const SKILL_INSTALL_URL: &str = "https://github.com/maxktz/hitch";
 const SKILL_NAME: &str = "hitch";
 const SKILL_MD: &str = include_str!("../SKILL.md");
 const HITCH_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -1928,14 +1927,9 @@ fn cmd_kill_session(id: Option<&str>) -> io::Result<()> {
 }
 
 fn cmd_install_skill() -> io::Result<()> {
-    let args = [
-        "--yes",
-        "skills",
-        "add",
-        SKILL_INSTALL_URL,
-        "--skill",
-        SKILL_NAME,
-    ];
+    let source = skill_source_dir()?;
+    let source_arg = source.to_string_lossy().into_owned();
+    let args = ["--yes", "skills", "add", &source_arg, "--skill", SKILL_NAME];
     println!("running: npx {}", args.join(" "));
 
     match Command::new("npx").args(args).status() {
@@ -1952,6 +1946,36 @@ fn cmd_install_skill() -> io::Result<()> {
         )),
         Err(err) => Err(err),
     }
+}
+
+fn skill_source_dir() -> io::Result<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Ok(exe) = env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.to_path_buf());
+            if let Some(parent) = dir.parent() {
+                candidates.push(parent.to_path_buf());
+                if let Some(grandparent) = parent.parent() {
+                    candidates.push(grandparent.to_path_buf());
+                }
+            }
+        }
+    }
+
+    if let Ok(cwd) = env::current_dir() {
+        candidates.push(cwd);
+    }
+
+    candidates
+        .into_iter()
+        .find(|path| path.join("SKILL.md").exists())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "could not find bundled SKILL.md for `hitch setup skill`",
+            )
+        })
 }
 
 fn outdated_skill_warning() -> Option<String> {

@@ -6,13 +6,29 @@ It shares lightweight shell terminals and lets agents inspect or interact with t
 
 ## Install
 
-For now, build from source:
+Install with npm:
+
+```sh
+npm install -g hitch-cli
+hitch setup
+```
+
+Or build from source:
 
 ```sh
 cargo install --git https://github.com/maxktz/hitch
 ```
 
-NPM distribution is planned.
+## Release
+
+Create a release commit and tag:
+
+```sh
+npm run release -- 0.1.1
+git push origin main --tags
+```
+
+GitHub Actions builds native Unix binaries, publishes `hitch-cli` to npm, and creates a GitHub release.
 
 ## Usage
 
