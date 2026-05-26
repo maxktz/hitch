@@ -9,6 +9,7 @@
   "files": [
     "bin/hitch",
     "native/",
+    "scripts/postinstall.js",
     "README.md",
     "SKILL.md"
   ],
