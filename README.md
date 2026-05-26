@@ -10,7 +10,7 @@ Install with npm:
 
 ```sh
 npm install -g hitch-cli
-hitch setup
+hitch
 ```
 
 Or build from source:
@@ -19,16 +19,23 @@ Or build from source:
 cargo install --git https://github.com/maxktz/hitch
 ```
 
+The first `hitch` run installs shell integration before sharing a terminal. Restart existing terminals after setup so your shell picks it up.
+
+Supported npm platforms:
+
+- macOS arm64 / x64
+- Linux arm64 / x64
+
 ## Release
 
 Create a release commit and tag:
 
 ```sh
-npm run release -- 0.1.1
+npm run release -- 0.1.0
 git push origin main --tags
 ```
 
-GitHub Actions builds native Unix binaries, publishes `hitch-cli` to npm, and creates a GitHub release.
+GitHub Actions builds native Unix binaries, publishes `hitch-cli` to npm, and creates a GitHub release. Npm release binaries check for npm updates in the background using a 6 hour cache; local source builds do not check npm.
 
 ## Usage
 
@@ -46,7 +53,7 @@ Run the setup wizard:
 hitch setup
 ```
 
-Or install shell integration directly:
+Install shell integration directly:
 
 ```sh
 hitch setup shell
@@ -104,5 +111,6 @@ hitch -v
 
 - `hitch context` is scoped to the current directory by default.
 - `hitch context --all` shows shared terminals across projects.
+- `hitch` automatically updates an existing Hitch shell integration block when needed.
 - `capture-pane`, `kill-session`, and `kill-sessions` are supported compatibility aliases.
-- macOS is the primary target right now.
+- Windows is not supported.
