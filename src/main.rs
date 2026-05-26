@@ -262,8 +262,7 @@ struct SessionState {
 
 struct Packet {
     typ: u8,
-    len: u8,
-    buf: [u8; mem::size_of::<libc::winsize>()],
+    payload: Vec<u8>,
 }
 
 enum WaitMode {
@@ -689,7 +688,6 @@ fn master_loop(
         if unsafe { libc::FD_ISSET(listener.as_raw_fd(), &readfds) } {
             match listener.accept() {
                 Ok((stream, _)) => {
-                    stream.set_nonblocking(true)?;
                     clients.push(Client {
                         stream,
                         attached: false,
@@ -807,16 +805,16 @@ fn handle_packet(
 ) -> io::Result<()> {
     match packet.typ {
         MSG_PUSH => {
-            let len = packet.len as usize;
-            let bytes = &packet.buf[..len];
             commands.note_input();
-            write_all_fd(pty_fd, bytes)?;
+            write_all_fd(pty_fd, &packet.payload)?;
         }
         MSG_ATTACH => client.attached = true,
         MSG_DETACH => client.attached = false,
         MSG_WINCH => unsafe {
-            let ws = packet.buf.as_ptr().cast::<libc::winsize>();
-            libc::ioctl(pty_fd, libc::TIOCSWINSZ, ws);
+            if packet.payload.len() == mem::size_of::<libc::winsize>() {
+                let ws = packet.payload.as_ptr().cast::<libc::winsize>();
+                libc::ioctl(pty_fd, libc::TIOCSWINSZ, ws);
+            }
         },
         _ => {}
     }
@@ -1058,24 +1056,27 @@ fn terminal_winsize() -> Option<libc::winsize> {
 }
 
 fn send_packet(stream: &mut UnixStream, typ: u8, payload: &[u8]) -> io::Result<()> {
-    let mut buf = [0u8; 2 + mem::size_of::<libc::winsize>()];
-    buf[0] = typ;
-    buf[1] = payload.len().min(mem::size_of::<libc::winsize>()) as u8;
-    let len = buf[1] as usize;
-    buf[2..2 + len].copy_from_slice(&payload[..len]);
-    stream.write_all(&buf)
+    let len: u32 = payload.len().try_into().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "packet payload is too large to send",
+        )
+    })?;
+    stream.write_all(&[typ])?;
+    stream.write_all(&len.to_be_bytes())?;
+    stream.write_all(payload)
 }
 
 fn read_packet(stream: &mut UnixStream) -> io::Result<Option<Packet>> {
-    let mut raw = [0u8; 2 + mem::size_of::<libc::winsize>()];
-    match stream.read_exact(&mut raw) {
+    let mut header = [0u8; 5];
+    match stream.read_exact(&mut header) {
         Ok(()) => {
-            let mut buf = [0u8; mem::size_of::<libc::winsize>()];
-            buf.copy_from_slice(&raw[2..]);
+            let len = u32::from_be_bytes([header[1], header[2], header[3], header[4]]) as usize;
+            let mut payload = vec![0u8; len];
+            stream.read_exact(&mut payload)?;
             Ok(Some(Packet {
-                typ: raw[0],
-                len: raw[1],
-                buf,
+                typ: header[0],
+                payload,
             }))
         }
         Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => Ok(None),
@@ -1352,9 +1353,7 @@ fn cmd_send_keys(args: &SendKeysArgs) -> io::Result<()> {
         payload.extend(key_to_bytes(arg));
     }
     let mut stream = UnixStream::connect(&session.socket)?;
-    for chunk in payload.chunks(mem::size_of::<libc::winsize>()) {
-        send_packet(&mut stream, MSG_PUSH, chunk)?;
-    }
+    send_packet(&mut stream, MSG_PUSH, &payload)?;
     let wait = args.wait.as_deref().map(parse_wait_mode).transpose()?;
     let output_limit = args.tail.or(wait.as_ref().map(|_| 40));
     let mut wait_timeout_note = None;
