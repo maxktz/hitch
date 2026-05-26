@@ -365,6 +365,13 @@ struct TitleFilter {
     state: u8,
 }
 
+#[derive(Default)]
+struct AltScreenLogFilter {
+    alt_screen: bool,
+    state: u8,
+    seq: Vec<u8>,
+}
+
 impl TitleFilter {
     fn filter(&mut self, input: &[u8]) -> Vec<u8> {
         let mut out = Vec::with_capacity(input.len());
@@ -420,6 +427,67 @@ impl TitleFilter {
             }
         }
         out
+    }
+}
+
+impl AltScreenLogFilter {
+    fn filter(&mut self, input: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(input.len());
+        for &b in input {
+            match self.state {
+                0 => {
+                    if b == 0x1b {
+                        self.seq.clear();
+                        self.seq.push(b);
+                        self.state = 1;
+                    } else if !self.alt_screen {
+                        out.push(b);
+                    }
+                }
+                1 => {
+                    self.seq.push(b);
+                    if b == b'[' {
+                        self.state = 2;
+                    } else {
+                        self.flush_sequence(&mut out);
+                    }
+                }
+                2 => {
+                    self.seq.push(b);
+                    if (0x40..=0x7e).contains(&b) {
+                        if self.is_alt_screen_sequence() {
+                            self.alt_screen = b == b'h';
+                            self.seq.clear();
+                        } else {
+                            self.flush_sequence(&mut out);
+                        }
+                        self.state = 0;
+                    }
+                }
+                _ => self.state = 0,
+            }
+        }
+        out
+    }
+
+    fn flush_sequence(&mut self, out: &mut Vec<u8>) {
+        if !self.alt_screen {
+            out.extend_from_slice(&self.seq);
+        }
+        self.seq.clear();
+        self.state = 0;
+    }
+
+    fn is_alt_screen_sequence(&self) -> bool {
+        matches!(
+            self.seq.as_slice(),
+            b"\x1b[?47h"
+                | b"\x1b[?47l"
+                | b"\x1b[?1047h"
+                | b"\x1b[?1047l"
+                | b"\x1b[?1049h"
+                | b"\x1b[?1049l"
+        )
     }
 }
 
@@ -643,6 +711,7 @@ fn master_loop(
         .open(&record.log)?;
     let mut clients: Vec<Client> = Vec::new();
     let mut filter = TitleFilter::default();
+    let mut log_filter = AltScreenLogFilter::default();
     let mut commands = CommandTracker::new(record, child_pid);
     let mut had_attached = false;
 
@@ -707,8 +776,11 @@ fn master_loop(
             }
             let filtered = filter.filter(&buf[..len as usize]);
             if !filtered.is_empty() {
-                let _ = log.write_all(&filtered);
-                commands.capture_output(&filtered);
+                let loggable = log_filter.filter(&filtered);
+                if !loggable.is_empty() {
+                    let _ = log.write_all(&loggable);
+                    commands.capture_output(&loggable);
+                }
                 clients.retain_mut(|client| {
                     if !client.attached {
                         return true;
