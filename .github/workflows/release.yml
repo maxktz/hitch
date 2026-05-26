@@ -12,6 +12,8 @@ jobs:
   build:
     name: Build ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    env:
+      HITCH_INSTALL_SOURCE: npm
     strategy:
       fail-fast: false
       matrix:

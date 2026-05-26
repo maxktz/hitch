@@ -3,6 +3,14 @@
   "version": "0.0.1-beta.0",
   "description": "Share terminals with AI coding agents.",
   "license": "MIT",
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
   "bin": {
     "hitch": "bin/hitch"
   },

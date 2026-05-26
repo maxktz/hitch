@@ -22,8 +22,16 @@ const MSG_DETACH: u8 = 2;
 const MSG_WINCH: u8 = 3;
 const MSG_DETACH_SESSION: u8 = 4;
 const SKILL_NAME: &str = "hitch";
+const SKILL_VERSION: &str = "1";
 const SKILL_MD: &str = include_str!("../SKILL.md");
 const HITCH_VERSION: &str = env!("CARGO_PKG_VERSION");
+const INSTALL_SOURCE: &str = match option_env!("HITCH_INSTALL_SOURCE") {
+    Some(source) => source,
+    None => "dev",
+};
+const NPM_PACKAGE_NAME: &str = "hitch-cli";
+const UPDATE_CACHE_TTL_SECS: u64 = 6 * 60 * 60;
+const NPM_REGISTRY_URL: &str = "https://registry.npmjs.org/hitch-cli";
 
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
@@ -242,6 +250,16 @@ struct SessionRecord {
     #[serde(rename = "createdAt")]
     created_at: String,
     shell: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct UpdateCache {
+    #[serde(rename = "checkedAt")]
+    checked_at: u64,
+    #[serde(rename = "installSource")]
+    install_source: String,
+    #[serde(rename = "latestVersion")]
+    latest_version: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -651,6 +669,23 @@ fn state_dir() -> PathBuf {
     }
 }
 
+fn cache_dir() -> PathBuf {
+    if let Some(xdg) = env::var_os("XDG_CACHE_HOME") {
+        PathBuf::from(xdg).join("hitch")
+    } else {
+        PathBuf::from(env::var_os("HOME").unwrap_or_else(|| OsString::from(".")))
+            .join(".cache/hitch")
+    }
+}
+
+fn update_cache_path() -> PathBuf {
+    cache_dir().join("update.json")
+}
+
+fn setup_marker_path() -> PathBuf {
+    state_dir().join("setup-complete")
+}
+
 fn sessions_dir() -> PathBuf {
     state_dir().join("sessions")
 }
@@ -701,6 +736,8 @@ fn cmd_start() -> io::Result<()> {
         ));
     }
 
+    ensure_setup_complete()?;
+
     ensure_state_dirs()?;
     let cwd = env::current_dir()?;
     let id = next_session_id()?;
@@ -734,6 +771,9 @@ fn cmd_start() -> io::Result<()> {
     if let Some(warning) = outdated_skill_warning() {
         println!("{}", style.muted(warning));
     }
+    if let Some(warning) = update_warning() {
+        println!("{}", style.muted(warning));
+    }
 
     let initial_winsize = terminal_winsize();
     let listener = UnixListener::bind(&record.socket)?;
@@ -757,6 +797,7 @@ fn cmd_start() -> io::Result<()> {
 
     fs::write(&record.master_pid_file, format!("{master_pid}\n"))?;
     drop(listener);
+    maybe_refresh_update_cache();
     let status = attach_socket(&record.socket, &record.id, None)?;
     let _ = fs::remove_dir_all(&dir);
     process::exit(status);
@@ -1927,87 +1968,177 @@ fn cmd_kill_session(id: Option<&str>) -> io::Result<()> {
 }
 
 fn cmd_install_skill() -> io::Result<()> {
-    let source = skill_source_dir()?;
+    let source = write_embedded_skill_dir()?;
     let source_arg = source.to_string_lossy().into_owned();
     let args = ["--yes", "skills", "add", &source_arg, "--skill", SKILL_NAME];
     println!("running: npx {}", args.join(" "));
 
-    match Command::new("npx").args(args).status() {
+    let result = match Command::new("npx").args(args).status() {
         Ok(status) if status.success() => Ok(()),
         Ok(status) => Err(io::Error::other(format!(
             "skill installer exited with status {status}"
         ))),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!(
-                "npx not found. Install Node.js or run manually: npx {}",
-                args.join(" ")
-            ),
+            "npx not found. Install Node.js and rerun `hitch setup skill`",
         )),
         Err(err) => Err(err),
-    }
+    };
+
+    let _ = fs::remove_dir_all(source);
+    result
 }
 
-fn skill_source_dir() -> io::Result<PathBuf> {
-    let mut candidates = Vec::new();
-
-    if let Ok(exe) = env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            candidates.push(dir.to_path_buf());
-            if let Some(parent) = dir.parent() {
-                candidates.push(parent.to_path_buf());
-                if let Some(grandparent) = parent.parent() {
-                    candidates.push(grandparent.to_path_buf());
-                }
-            }
-        }
-    }
-
-    if let Ok(cwd) = env::current_dir() {
-        candidates.push(cwd);
-    }
-
-    candidates
-        .into_iter()
-        .find(|path| path.join("SKILL.md").exists())
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                "could not find bundled SKILL.md for `hitch setup skill`",
-            )
-        })
+fn write_embedded_skill_dir() -> io::Result<PathBuf> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let dir = env::temp_dir().join(format!("hitch-skill-{}-{now}", process::id()));
+    fs::create_dir_all(&dir)?;
+    fs::write(dir.join("SKILL.md"), SKILL_MD)?;
+    Ok(dir)
 }
 
-fn outdated_skill_warning() -> Option<String> {
-    let installed = installed_skill_version()?;
-    if version_less_than(&installed, HITCH_VERSION) {
+fn update_warning() -> Option<String> {
+    if INSTALL_SOURCE != "npm" {
+        return None;
+    }
+
+    let cache = read_update_cache()?;
+    if cache.install_source != INSTALL_SOURCE {
+        return None;
+    }
+    let latest = cache.latest_version?;
+    if version_less_than(HITCH_VERSION, &latest) {
         Some(format!(
-            "agent skill is outdated, run `hitch setup skill` (installed {installed}, bundled {HITCH_VERSION})"
+            "update available {HITCH_VERSION} -> {latest}, run `npm install -g {NPM_PACKAGE_NAME}`"
         ))
     } else {
         None
     }
 }
 
-fn installed_skill_version() -> Option<String> {
+fn maybe_refresh_update_cache() {
+    if INSTALL_SOURCE != "npm" || !update_cache_stale() {
+        return;
+    }
+
+    let path = update_cache_path();
+    let _ = thread::Builder::new()
+        .name("hitch-update-check".to_string())
+        .spawn(move || {
+            let _ = refresh_npm_update_cache(&path);
+        });
+}
+
+fn update_cache_stale() -> bool {
+    let Some(cache) = read_update_cache() else {
+        return true;
+    };
+    if cache.install_source != INSTALL_SOURCE {
+        return true;
+    }
+    now_epoch().saturating_sub(cache.checked_at) >= UPDATE_CACHE_TTL_SECS
+}
+
+fn read_update_cache() -> Option<UpdateCache> {
+    let raw = fs::read_to_string(update_cache_path()).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+fn refresh_npm_update_cache(path: &Path) -> io::Result<()> {
+    let latest = fetch_npm_latest_version();
+    let cache = UpdateCache {
+        checked_at: now_epoch(),
+        install_source: INSTALL_SOURCE.to_string(),
+        latest_version: latest,
+    };
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, serde_json::to_string_pretty(&cache).unwrap())?;
+    Ok(())
+}
+
+fn fetch_npm_latest_version() -> Option<String> {
+    let response = minreq::get(NPM_REGISTRY_URL).with_timeout(3).send().ok()?;
+    let raw = response.as_str().ok()?;
+    let value = serde_json::from_str::<serde_json::Value>(raw).ok()?;
+    let tag = if HITCH_VERSION.contains('-') {
+        "beta"
+    } else {
+        "latest"
+    };
+    value
+        .get("dist-tags")
+        .and_then(|tags| tags.get(tag).or_else(|| tags.get("latest")))
+        .and_then(|version| version.as_str())
+        .map(str::to_string)
+}
+
+fn outdated_skill_warning() -> Option<String> {
     for path in installed_skill_paths() {
-        if let Ok(raw) = fs::read_to_string(path) {
-            if let Some(version) = skill_version(&raw) {
-                return Some(version);
-            }
+        let Ok(raw) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Some(installed) = skill_version(&raw) else {
+            continue;
+        };
+        if version_less_than(&installed, SKILL_VERSION) {
+            let root = format_skill_root(&path);
+            return Some(format!(
+                "agent skill in \"{root}\" is outdated, run `hitch setup` to update"
+            ));
         }
     }
     None
 }
 
 fn installed_skill_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    if let Ok(cwd) = env::current_dir() {
+        paths.push(cwd.join(".agents/skills/hitch/SKILL.md"));
+        paths.push(cwd.join(".claude/skills/hitch/SKILL.md"));
+    }
+
     let Some(home) = env::var_os("HOME").map(PathBuf::from) else {
-        return Vec::new();
+        return paths;
     };
-    vec![
-        home.join(".agents/skills/hitch/SKILL.md"),
-        home.join(".codex/skills/hitch/SKILL.md"),
-    ]
+
+    paths.push(home.join(".agents/skills/hitch/SKILL.md"));
+    paths.push(home.join(".claude/skills/hitch/SKILL.md"));
+    paths
+}
+
+fn format_skill_root(path: &Path) -> String {
+    let root = path
+        .parent()
+        .and_then(Path::parent)
+        .unwrap_or(path)
+        .to_path_buf();
+
+    if let Ok(cwd) = env::current_dir() {
+        if let Ok(relative) = root.strip_prefix(&cwd) {
+            if relative.as_os_str().is_empty() {
+                return ".".to_string();
+            }
+            return format!("./{}", relative.display());
+        }
+    }
+
+    if let Some(home) = env::var_os("HOME").map(PathBuf::from) {
+        if let Ok(relative) = root.strip_prefix(home) {
+            if relative.as_os_str().is_empty() {
+                return "~".to_string();
+            }
+            return format!("~/{}", relative.display());
+        }
+    }
+
+    root.display().to_string()
 }
 
 fn skill_version(raw: &str) -> Option<String> {
@@ -2050,11 +2181,40 @@ fn cmd_print_skill() -> io::Result<()> {
     Ok(())
 }
 
+fn ensure_setup_complete() -> io::Result<()> {
+    if setup_marker_path().exists() {
+        return Ok(());
+    }
+
+    println!("welcome to hitch");
+    println!("running setup first");
+    println!();
+    cmd_setup_wizard()?;
+    mark_setup_complete()?;
+    println!();
+    println!("setup complete, run `hitch` again after restarting existing terminals");
+    process::exit(0);
+}
+
+fn mark_setup_complete() -> io::Result<()> {
+    let marker = setup_marker_path();
+    if let Some(parent) = marker.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(marker, b"1\n")
+}
+
 fn cmd_setup(args: &SetupArgs) -> io::Result<()> {
     match args.command {
-        Some(SetupCommand::Shell) => cmd_setup_prompt(),
+        Some(SetupCommand::Shell) => {
+            cmd_setup_prompt()?;
+            mark_setup_complete()
+        }
         Some(SetupCommand::Skill) => cmd_install_skill(),
-        None => cmd_setup_wizard(),
+        None => {
+            cmd_setup_wizard()?;
+            mark_setup_complete()
+        }
     }
 }
 
@@ -2332,20 +2492,23 @@ if [[ -z "${HITCH_PROMPT_INSTALLED:-}" && -z "${POWERLEVEL9K_LEFT_PROMPT_ELEMENT
   PROMPT='$(_hitch_prompt_segment)'"$PROMPT"
 fi
 
-function hitch() {
-  if [[ -z "${HITCH_SESSION:-}" && ( "$#" -eq 0 || "$1" == "start" ) ]]; then
-    fc -W 2>/dev/null
-  fi
+_HITCH_BIN="${commands[hitch]:-}"
+if [[ -n "${_HITCH_BIN:-}" ]]; then
+  function hitch() {
+    if [[ -z "${HITCH_SESSION:-}" && ( "$#" -eq 0 || "$1" == "start" ) ]]; then
+      fc -W 2>/dev/null
+    fi
 
-  command hitch "$@"
-  local code=$?
-  if [[ "$code" -eq 42 ]]; then
-    exit
-  fi
-  return "$code"
-}
+    "$_HITCH_BIN" "$@"
+    local code=$?
+    if [[ "$code" -eq 42 ]]; then
+      exit
+    fi
+    return "$code"
+  }
 
-alias unhitch='hitch stop'
+  alias unhitch='hitch stop'
+fi
 # <<< hitch shell integration <<<"#
 }
 
@@ -2360,20 +2523,23 @@ if [[ -z "${HITCH_PROMPT_INSTALLED:-}" ]]; then
   PS1='$(_hitch_prompt_segment)'"$PS1"
 fi
 
-hitch() {
-  if [[ -z "${HITCH_SESSION:-}" && ( "$#" -eq 0 || "$1" == "start" ) ]]; then
-    history -a 2>/dev/null
-  fi
+_HITCH_BIN="$(type -P hitch 2>/dev/null || true)"
+if [[ -n "${_HITCH_BIN:-}" ]]; then
+  hitch() {
+    if [[ -z "${HITCH_SESSION:-}" && ( "$#" -eq 0 || "$1" == "start" ) ]]; then
+      history -a 2>/dev/null
+    fi
 
-  command hitch "$@"
-  local code=$?
-  if [[ "$code" -eq 42 ]]; then
-    exit
-  fi
-  return "$code"
-}
+    "$_HITCH_BIN" "$@"
+    local code=$?
+    if [[ "$code" -eq 42 ]]; then
+      exit
+    fi
+    return "$code"
+  }
 
-alias unhitch='hitch stop'
+  alias unhitch='hitch stop'
+fi
 # <<< hitch shell integration <<<"#
 }
 
@@ -2392,22 +2558,25 @@ function fish_prompt
     __hitch_original_fish_prompt
 end
 
-function hitch
-    if not set -q HITCH_SESSION
-        if test (count $argv) -eq 0; or test "$argv[1]" = start
-            history save 2>/dev/null
+set -g __hitch_bin (command -s hitch)
+if test -n "$__hitch_bin"
+    function hitch
+        if not set -q HITCH_SESSION
+            if test (count $argv) -eq 0; or test "$argv[1]" = start
+                history save 2>/dev/null
+            end
         end
+
+        "$__hitch_bin" $argv
+        set code $status
+        if test $code -eq 42
+            exit
+        end
+        return $code
     end
 
-    command hitch $argv
-    set code $status
-    if test $code -eq 42
-        exit
-    end
-    return $code
+    alias unhitch 'hitch stop'
 end
-
-alias unhitch 'hitch stop'
 # <<< hitch shell integration <<<"#
 }
 

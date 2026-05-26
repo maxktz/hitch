@@ -20,9 +20,4 @@ if (!existsSync(source)) {
 copyFileSync(source, target);
 chmodSync(target, 0o755);
 
-console.log("");
 console.log("hitch installed");
-console.log("");
-console.log("Run setup to finish installation:");
-console.log("  hitch setup");
-console.log("");

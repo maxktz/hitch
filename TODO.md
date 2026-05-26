@@ -1,40 +1,24 @@
-- send-keys wait options
-- sent-keys send multiple at once
-- fix paste bug 
-
-- context flags
-- show last lines and context since line
-
-- agent skill:
-  - say use sleep to wait for outputs
-  - make `list` smart showing more based on which had output most recently or input, etc 
-  - reduce agent pooling by wait for output conditions
-  - make send keys return things
-
-- fix bug with TUI
-
-- print-skill agent command
-- separate --help for agent and for human
-- -v for version
-
 - proper installation commands
-  - hitch setup wizard
-  - install hitch
-  - versioning and updates
-  - version for skill
-  - agent inputs history
+  - readme 
+  - js -> ts
+  - analytics
 
 
 - show session number in terminal title
 
-- fix "actively running: node /Users/maxktz/.nvm/versions/node/v23.7.0/bin/pnpm dev"
+- show last lines and context since line
 
+agent skill:
+  - prefer send-keys in parallel over sequential
+
+- shell hooks wrapping commands
 
 priority 3:
 - option for agent to spin up sessions for user to join 
 
 maybe:
 - make send-keys always return output
+- agent inputs history
 
 
 harder to make:

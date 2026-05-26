@@ -7,5 +7,6 @@ edition = "2024"
 clap = { version = "4", features = ["derive"] }
 inquire = "0.9"
 libc = "0.2"
+minreq = { version = "2", features = ["https-rustls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
