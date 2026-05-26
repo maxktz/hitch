@@ -1,5 +1,6 @@
 use clap::{Args, Parser, Subcommand};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::env;
 use std::ffi::{CString, OsString};
 use std::fs::{self, OpenOptions};
@@ -372,6 +373,13 @@ struct AltScreenLogFilter {
     seq: Vec<u8>,
 }
 
+#[derive(Default)]
+struct AltScreenTracker {
+    alt_screen: bool,
+    state: u8,
+    seq: Vec<u8>,
+}
+
 impl TitleFilter {
     fn filter(&mut self, input: &[u8]) -> Vec<u8> {
         let mut out = Vec::with_capacity(input.len());
@@ -479,16 +487,50 @@ impl AltScreenLogFilter {
     }
 
     fn is_alt_screen_sequence(&self) -> bool {
-        matches!(
-            self.seq.as_slice(),
-            b"\x1b[?47h"
-                | b"\x1b[?47l"
-                | b"\x1b[?1047h"
-                | b"\x1b[?1047l"
-                | b"\x1b[?1049h"
-                | b"\x1b[?1049l"
-        )
+        is_alt_screen_sequence(&self.seq)
     }
+}
+
+impl AltScreenTracker {
+    fn observe(&mut self, input: &[u8]) {
+        for &b in input {
+            match self.state {
+                0 => {
+                    if b == 0x1b {
+                        self.seq.clear();
+                        self.seq.push(b);
+                        self.state = 1;
+                    }
+                }
+                1 => {
+                    self.seq.push(b);
+                    self.state = if b == b'[' { 2 } else { 0 };
+                }
+                2 => {
+                    self.seq.push(b);
+                    if (0x40..=0x7e).contains(&b) {
+                        if is_alt_screen_sequence(&self.seq) {
+                            self.alt_screen = b == b'h';
+                        }
+                        self.state = 0;
+                    }
+                }
+                _ => self.state = 0,
+            }
+        }
+    }
+}
+
+fn is_alt_screen_sequence(seq: &[u8]) -> bool {
+    matches!(
+        seq,
+        b"\x1b[?47h"
+            | b"\x1b[?47l"
+            | b"\x1b[?1047h"
+            | b"\x1b[?1047l"
+            | b"\x1b[?1049h"
+            | b"\x1b[?1049l"
+    )
 }
 
 fn main() {
@@ -712,6 +754,7 @@ fn master_loop(
     let mut clients: Vec<Client> = Vec::new();
     let mut filter = TitleFilter::default();
     let mut log_filter = AltScreenLogFilter::default();
+    let mut alt_screen = AltScreenTracker::default();
     let mut commands = CommandTracker::new(record, child_pid);
     let mut had_attached = false;
 
@@ -769,24 +812,16 @@ fn master_loop(
 
         if unsafe { libc::FD_ISSET(pty_fd, &readfds) } {
             commands.refresh(pty_fd);
-            let mut buf = [0u8; BUF_SIZE];
-            let len = unsafe { libc::read(pty_fd, buf.as_mut_ptr().cast(), buf.len()) };
-            if len <= 0 {
+            if !drain_pty_output(
+                pty_fd,
+                &mut filter,
+                &mut log_filter,
+                &mut alt_screen,
+                &mut log,
+                &mut commands,
+                &mut clients,
+            )? {
                 break;
-            }
-            let filtered = filter.filter(&buf[..len as usize]);
-            if !filtered.is_empty() {
-                let loggable = log_filter.filter(&filtered);
-                if !loggable.is_empty() {
-                    let _ = log.write_all(&loggable);
-                    commands.capture_output(&loggable);
-                }
-                clients.retain_mut(|client| {
-                    if !client.attached {
-                        return true;
-                    }
-                    client.stream.write_all(&filtered).is_ok()
-                });
             }
         }
 
@@ -828,6 +863,99 @@ fn master_loop(
 
     let _ = fs::remove_file(&record.socket);
     Ok(())
+}
+
+fn drain_pty_output(
+    pty_fd: RawFd,
+    filter: &mut TitleFilter,
+    log_filter: &mut AltScreenLogFilter,
+    alt_screen: &mut AltScreenTracker,
+    log: &mut fs::File,
+    commands: &mut CommandTracker,
+    clients: &mut Vec<Client>,
+) -> io::Result<bool> {
+    loop {
+        let mut buf = [0u8; BUF_SIZE];
+        let len = unsafe { libc::read(pty_fd, buf.as_mut_ptr().cast(), buf.len()) };
+        if len <= 0 {
+            return Ok(false);
+        }
+        process_pty_output_chunk(
+            &buf[..len as usize],
+            filter,
+            log_filter,
+            alt_screen,
+            log,
+            commands,
+            clients,
+        );
+        if !fd_readable_now(pty_fd)? {
+            return Ok(true);
+        }
+    }
+}
+
+fn process_pty_output_chunk(
+    raw: &[u8],
+    filter: &mut TitleFilter,
+    log_filter: &mut AltScreenLogFilter,
+    alt_screen: &mut AltScreenTracker,
+    log: &mut fs::File,
+    commands: &mut CommandTracker,
+    clients: &mut Vec<Client>,
+) {
+    let was_alt_screen = alt_screen.alt_screen;
+    alt_screen.observe(raw);
+    let filtered: Cow<'_, [u8]> = if was_alt_screen && alt_screen.alt_screen {
+        Cow::Borrowed(raw)
+    } else {
+        Cow::Owned(filter.filter(raw))
+    };
+    if filtered.is_empty() {
+        return;
+    }
+    if !was_alt_screen || !alt_screen.alt_screen {
+        let loggable = log_filter.filter(filtered.as_ref());
+        if !loggable.is_empty() {
+            let _ = log.write_all(&loggable);
+            commands.capture_output(&loggable);
+        }
+    }
+    clients.retain_mut(|client| {
+        if !client.attached {
+            return true;
+        }
+        client.stream.write_all(filtered.as_ref()).is_ok()
+    });
+}
+
+fn fd_readable_now(fd: RawFd) -> io::Result<bool> {
+    let mut readfds = unsafe { mem::zeroed::<libc::fd_set>() };
+    unsafe {
+        libc::FD_ZERO(&mut readfds);
+        libc::FD_SET(fd, &mut readfds);
+    }
+    let mut timeout = libc::timeval {
+        tv_sec: 0,
+        tv_usec: 0,
+    };
+    let rc = unsafe {
+        libc::select(
+            fd + 1,
+            &mut readfds,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut timeout,
+        )
+    };
+    if rc < 0 {
+        let err = io::Error::last_os_error();
+        if err.kind() == io::ErrorKind::Interrupted {
+            return Ok(false);
+        }
+        return Err(err);
+    }
+    Ok(rc > 0 && unsafe { libc::FD_ISSET(fd, &readfds) })
 }
 
 fn fork_shell(
@@ -936,9 +1064,7 @@ fn attach_socket(socket: &str, session_id: &str, log_path: Option<&str>) -> io::
             return Err(err);
         }
         if unsafe { libc::FD_ISSET(sock_fd, &readfds) } {
-            let mut buf = [0u8; BUF_SIZE];
-            let len = stream.read(&mut buf)?;
-            if len == 0 {
+            if !drain_socket_to_stdout(&mut stream)? {
                 if stop_marker_path(session_id).exists() {
                     let _ = fs::remove_file(stop_marker_path(session_id));
                     println!("\r\n{}", exit_message());
@@ -950,7 +1076,6 @@ fn attach_socket(socket: &str, session_id: &str, log_path: Option<&str>) -> io::
                     EXIT_PARENT_CODE
                 });
             }
-            io::stdout().write_all(&buf[..len])?;
             io::stdout().flush()?;
         }
         if unsafe { libc::FD_ISSET(stdin_fd, &readfds) } {
@@ -965,6 +1090,20 @@ fn attach_socket(socket: &str, session_id: &str, log_path: Option<&str>) -> io::
                 return Ok(0);
             }
             send_packet(&mut stream, MSG_PUSH, &buf[..len as usize])?;
+        }
+    }
+}
+
+fn drain_socket_to_stdout(stream: &mut UnixStream) -> io::Result<bool> {
+    loop {
+        let mut buf = [0u8; BUF_SIZE];
+        let len = stream.read(&mut buf)?;
+        if len == 0 {
+            return Ok(false);
+        }
+        io::stdout().write_all(&buf[..len])?;
+        if !fd_readable_now(stream.as_raw_fd())? {
+            return Ok(true);
         }
     }
 }
