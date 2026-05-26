@@ -24,7 +24,13 @@ hitch
 hitch start
 ```
 
-Install shell integration:
+Run the setup wizard:
+
+```sh
+hitch setup
+```
+
+Or install shell integration directly:
 
 ```sh
 hitch setup shell
@@ -70,6 +76,12 @@ Install the optional agent skill:
 
 ```sh
 hitch setup skill
+```
+
+Show version:
+
+```sh
+hitch -v
 ```
 
 ## Notes

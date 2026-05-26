@@ -1,4 +1,5 @@
 use clap::{Args, Parser, Subcommand};
+use inquire::Confirm;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::env;
@@ -23,6 +24,7 @@ const MSG_DETACH_SESSION: u8 = 4;
 const SKILL_INSTALL_URL: &str = "https://github.com/maxktz/hitch";
 const SKILL_NAME: &str = "hitch";
 const SKILL_MD: &str = include_str!("../SKILL.md");
+const HITCH_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
@@ -62,7 +64,7 @@ enum Commands {
     Stop,
     /// Show whether this terminal is being shared.
     Status(StatusArgs),
-    /// Install shell integration or the optional agent skill.
+    /// Run setup wizard or install shell integration / agent skill directly.
     Setup(SetupArgs),
     /// Show shared terminals and compact context.
     Context(ContextArgs),
@@ -83,7 +85,7 @@ enum Commands {
 #[derive(Args)]
 struct SetupArgs {
     #[command(subcommand)]
-    command: SetupCommand,
+    command: Option<SetupCommand>,
 }
 
 #[derive(Subcommand)]
@@ -549,6 +551,11 @@ fn run() -> io::Result<()> {
         return cmd_print_skill();
     }
 
+    if top_level_version_requested() {
+        print_version();
+        return Ok(());
+    }
+
     if top_level_help_requested() {
         print_top_level_help();
         return Ok(());
@@ -593,6 +600,21 @@ fn top_level_help_requested() -> bool {
     matches!(args[0].to_str(), Some("-h") | Some("--help") | Some("help"))
 }
 
+fn top_level_version_requested() -> bool {
+    let args = env::args_os().skip(1).collect::<Vec<_>>();
+    if args.len() != 1 {
+        return false;
+    }
+    matches!(
+        args[0].to_str(),
+        Some("-v") | Some("-V") | Some("--version")
+    )
+}
+
+fn print_version() {
+    println!("hitch {HITCH_VERSION}");
+}
+
 fn print_top_level_help() {
     println!("Usage: hitch [COMMAND]");
     println!();
@@ -600,7 +622,7 @@ fn print_top_level_help() {
     println!("  start        Share this terminal with agents");
     println!("  stop         Stop sharing this terminal");
     println!("  status       Show whether this terminal is being shared");
-    println!("  setup        Install shell integration or the optional agent skill");
+    println!("  setup        Run setup wizard or install shell integration / agent skill");
     println!();
     println!("Agent commands:");
     println!("  context      Show shared terminals and compact context");
@@ -614,7 +636,7 @@ fn print_top_level_help() {
     println!("Options:");
     println!("      --skill    Print agent instructions");
     println!("  -h, --help     Print help");
-    println!("  -V, --version  Print version");
+    println!("  -v, --version  Print version");
     println!();
     println!(
         "For agent: run `hitch context` before starting dev servers, watchers, tunnels, REPLs, or log tails. Use `hitch --skill` to learn how to use hitch."
@@ -710,6 +732,9 @@ fn cmd_start() -> io::Result<()> {
         style.id(&id),
         style.muted("(Ctrl-\\ to stop)")
     );
+    if let Some(warning) = outdated_skill_warning() {
+        println!("{}", style.muted(warning));
+    }
 
     let initial_winsize = terminal_winsize();
     let listener = UnixListener::bind(&record.socket)?;
@@ -1929,6 +1954,70 @@ fn cmd_install_skill() -> io::Result<()> {
     }
 }
 
+fn outdated_skill_warning() -> Option<String> {
+    let installed = installed_skill_version()?;
+    if version_less_than(&installed, HITCH_VERSION) {
+        Some(format!(
+            "agent skill is outdated, run `hitch setup skill` (installed {installed}, bundled {HITCH_VERSION})"
+        ))
+    } else {
+        None
+    }
+}
+
+fn installed_skill_version() -> Option<String> {
+    for path in installed_skill_paths() {
+        if let Ok(raw) = fs::read_to_string(path) {
+            if let Some(version) = skill_version(&raw) {
+                return Some(version);
+            }
+        }
+    }
+    None
+}
+
+fn installed_skill_paths() -> Vec<PathBuf> {
+    let Some(home) = env::var_os("HOME").map(PathBuf::from) else {
+        return Vec::new();
+    };
+    vec![
+        home.join(".agents/skills/hitch/SKILL.md"),
+        home.join(".codex/skills/hitch/SKILL.md"),
+    ]
+}
+
+fn skill_version(raw: &str) -> Option<String> {
+    raw.lines().find_map(|line| {
+        let line = line.trim();
+        let version = line.strip_prefix("version:")?.trim();
+        if version.is_empty() {
+            return None;
+        }
+        Some(version.trim_matches(['"', '\'']).to_string())
+    })
+}
+
+fn version_less_than(left: &str, right: &str) -> bool {
+    let left = parse_version(left);
+    let right = parse_version(right);
+    let len = left.len().max(right.len());
+    for index in 0..len {
+        let left_part = left.get(index).copied().unwrap_or(0);
+        let right_part = right.get(index).copied().unwrap_or(0);
+        if left_part != right_part {
+            return left_part < right_part;
+        }
+    }
+    false
+}
+
+fn parse_version(version: &str) -> Vec<u64> {
+    version
+        .split(['.', '-'])
+        .map(|part| part.parse::<u64>().unwrap_or(0))
+        .collect()
+}
+
 fn cmd_print_skill() -> io::Result<()> {
     print!("{}", SKILL_MD);
     if !SKILL_MD.ends_with('\n') {
@@ -1939,9 +2028,34 @@ fn cmd_print_skill() -> io::Result<()> {
 
 fn cmd_setup(args: &SetupArgs) -> io::Result<()> {
     match args.command {
-        SetupCommand::Shell => cmd_setup_prompt(),
-        SetupCommand::Skill => cmd_install_skill(),
+        Some(SetupCommand::Shell) => cmd_setup_prompt(),
+        Some(SetupCommand::Skill) => cmd_install_skill(),
+        None => cmd_setup_wizard(),
     }
+}
+
+fn cmd_setup_wizard() -> io::Result<()> {
+    println!("hitch setup");
+    println!();
+
+    cmd_setup_prompt()?;
+    println!();
+
+    let install_skill = confirm("Install agent skill?", true)?;
+    if install_skill {
+        cmd_install_skill()?;
+    } else {
+        println!("agent skill skipped");
+    }
+
+    Ok(())
+}
+
+fn confirm(prompt: &str, default: bool) -> io::Result<bool> {
+    Confirm::new(prompt)
+        .with_default(default)
+        .prompt()
+        .map_err(io::Error::other)
 }
 
 fn cmd_setup_prompt() -> io::Result<()> {
