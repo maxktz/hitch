@@ -1,0 +1,27 @@
+{
+  "name": "hitch-cli",
+  "version": "0.0.1-beta.0",
+  "description": "Share terminals with AI coding agents.",
+  "license": "MIT",
+  "bin": {
+    "hitch": "bin/hitch"
+  },
+  "files": [
+    "bin/hitch",
+    "native/",
+    "README.md",
+    "SKILL.md"
+  ],
+  "scripts": {
+    "build:native": "cargo build --release",
+    "prepare:npm": "node scripts/prepare-npm.js",
+    "sync-version": "node scripts/sync-version.js",
+    "release": "node scripts/release.js",
+    "pack:local": "npm run build:native && npm run prepare:npm && node scripts/postinstall.js && npm pack --ignore-scripts",
+    "prepack": "npm run build:native && npm run prepare:npm",
+    "postinstall": "node scripts/postinstall.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
