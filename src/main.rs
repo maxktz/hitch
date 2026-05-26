@@ -29,6 +29,9 @@ const GREEN: &str = "\x1b[32m";
 const RED: &str = "\x1b[31m";
 const ATTACH_HISTORY_BYTES: u64 = 64 * 1024;
 const ACTIVE_COMMAND_HEAD_LINES: usize = 5;
+const CONTEXT_TAIL_LINES: usize = 20;
+const CONTEXT_SINGLE_HEAD_LINES: usize = 10;
+const CONTEXT_SINGLE_TAIL_LINES: usize = 80;
 const EXIT_PARENT_CODE: i32 = 42;
 static WINCH_PENDING: AtomicBool = AtomicBool::new(false);
 
@@ -40,7 +43,7 @@ struct Style {
 #[command(
     name = "hitch",
     version,
-    after_help = "Agents: run `hitch list` before starting dev servers, watchers, tunnels, REPLs, or log tails. Use `capture` to inspect output and `send-keys` to interact."
+    after_help = "Agents: run `hitch context` before starting dev servers, watchers, tunnels, REPLs, or log tails. Use `capture` to inspect output and `send-keys` to interact."
 )]
 struct Cli {
     #[arg(long)]
@@ -52,7 +55,6 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Share this terminal with agents.
-    #[command(next_help_heading = "User commands")]
     Start,
     /// Stop sharing this terminal.
     Stop,
@@ -60,12 +62,11 @@ enum Commands {
     Status(StatusArgs),
     /// Install shell integration or the optional agent skill.
     Setup(SetupArgs),
-    /// List shared terminals and compact context.
-    #[command(next_help_heading = "Agent commands")]
-    List(ListArgs),
+    /// Show shared terminals and compact context.
+    Context(ContextArgs),
     /// Send input to a shared terminal.
     SendKeys(SendKeysArgs),
-    /// Read output from a shared terminal.
+    /// Print a faithful terminal transcript.
     Capture(CapturePaneArgs),
     #[command(hide = true)]
     CapturePane(CapturePaneArgs),
@@ -75,11 +76,6 @@ enum Commands {
     KillSession(SessionArg),
     #[command(hide = true)]
     KillSessions(SessionArg),
-    /// Print a note about shell initialization.
-    #[command(next_help_heading = "Other commands")]
-    Init,
-    #[command(hide = true)]
-    InitPrompt,
 }
 
 #[derive(Args)]
@@ -97,13 +93,19 @@ enum SetupCommand {
 }
 
 #[derive(Args)]
-struct ListArgs {
+struct ContextArgs {
+    #[arg(value_name = "TERMINAL")]
+    terminal: Option<String>,
     #[arg(long)]
     all: bool,
     #[arg(long)]
     dir: Option<PathBuf>,
-    #[arg(long, default_value_t = 20)]
-    tail: usize,
+    #[arg(long)]
+    head: Option<usize>,
+    #[arg(long)]
+    tail: Option<usize>,
+    #[arg(long)]
+    no_output: bool,
 }
 
 #[derive(Args)]
@@ -417,20 +419,13 @@ fn run() -> io::Result<()> {
         return match command {
             Commands::Start => cmd_start(),
             Commands::Stop => cmd_stop(),
-            Commands::List(args) => cmd_list(&args),
+            Commands::Context(args) => cmd_context(&args),
             Commands::SendKeys(args) => cmd_send_keys(&args),
             Commands::Capture(args) | Commands::CapturePane(args) => cmd_capture_pane(&args),
             Commands::Kill(args) | Commands::KillSession(args) | Commands::KillSessions(args) => {
                 cmd_kill_session(Some(&args.session))
             }
             Commands::Status(args) => cmd_status(&args),
-            Commands::Init => {
-                let style = Style::stdout();
-                println!("# {}: auto-wrap is disabled.", style.brand());
-                println!("# Run \"hitch\" when you want a terminal to be visible to agents.");
-                Ok(())
-            }
-            Commands::InitPrompt => cmd_init_prompt(),
             Commands::Setup(args) => cmd_setup(&args),
         };
     }
@@ -468,13 +463,12 @@ fn print_top_level_help() {
     println!("  setup        Install shell integration or the optional agent skill");
     println!();
     println!("Agent commands:");
-    println!("  list         List shared terminals and compact context");
-    println!("  capture      Read output from a shared terminal");
+    println!("  context      Show shared terminals and compact context");
+    println!("  capture      Print a faithful terminal transcript");
     println!("  send-keys    Send input to a shared terminal");
     println!("  kill         Kill a shared terminal");
     println!();
     println!("Other commands:");
-    println!("  init         Print a note about shell initialization");
     println!("  help         Print help for a command");
     println!();
     println!("Options:");
@@ -483,7 +477,7 @@ fn print_top_level_help() {
     println!("  -V, --version  Print version");
     println!();
     println!(
-        "For agent: you can run `hitch --skill` to learn how to use hitch. Please don't run user commands, only users are able to use them."
+        "For agent: run `hitch context` before starting dev servers, watchers, tunnels, REPLs, or log tails. Use `hitch --skill` to learn how to use hitch."
     );
 }
 
@@ -1058,10 +1052,22 @@ fn write_all_fd(fd: RawFd, mut bytes: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-fn cmd_list(args: &ListArgs) -> io::Result<()> {
+fn cmd_context(args: &ContextArgs) -> io::Result<()> {
+    if let Some(id) = &args.terminal {
+        let session = find_session(Some(id))?;
+        let head = args.head.unwrap_or(CONTEXT_SINGLE_HEAD_LINES);
+        let tail = args.tail.unwrap_or(CONTEXT_SINGLE_TAIL_LINES);
+        println!("terminal: {}", session.id);
+        println!();
+        print_context_session(&session, head, tail, args.no_output)?;
+        return Ok(());
+    }
+
     let all_sessions = read_sessions()?;
     let total_count = all_sessions.len();
     let mut sessions = all_sessions;
+    let head = args.head.unwrap_or(ACTIVE_COMMAND_HEAD_LINES);
+    let tail = args.tail.unwrap_or(CONTEXT_TAIL_LINES);
 
     let filter_dir = if let Some(dir) = args.dir.clone() {
         Some(dir)
@@ -1099,68 +1105,83 @@ fn cmd_list(args: &ListArgs) -> io::Result<()> {
     }
 
     for session in sessions {
-        let state = read_session_state(&session.id);
-        let cwd = current_dir_for_session(&session, &state);
-        let activity = state
-            .last_activity_at
-            .map(time_ago)
-            .unwrap_or_else(|| "unknown".to_string());
-
         println!("----- terminal {} -----", style.id(&session.id));
-        println!("current dir: {}", style.path(shorten_home(&cwd)));
-        println!("last input was {activity}");
-        if state.command_running {
-            let duration = state
-                .command_started_at
-                .map(running_for)
-                .unwrap_or_else(|| "unknown time".to_string());
-            println!("process is running for {}", style.command(duration));
-        } else {
-            println!("no actively running commands");
-        }
-
-        let mut printed_output = false;
-        if state.command_running {
-            let head = list_head_lines(&active_output_path(&session.id), ACTIVE_COMMAND_HEAD_LINES);
-            let tail = list_tail_lines(&session.log, args.tail);
-            if !head.is_empty() && !contains_line_sequence(&tail, &head) {
-                println!();
-                println!("--- active output head ({} lines) ---", head.len());
-                for line in head {
-                    println!("{line}");
-                }
-                printed_output = true;
-            }
-            if !tail.is_empty() {
-                println!();
-                println!("--- recent output ({} lines) ---", tail.len());
-                for line in tail {
-                    println!("{line}");
-                }
-                printed_output = true;
-            }
-        } else {
-            let tail = list_tail_lines(&session.log, args.tail);
-            if !tail.is_empty() {
-                println!();
-                println!("--- recent output ({} lines) ---", tail.len());
-                for line in tail {
-                    println!("{line}");
-                }
-                printed_output = true;
-            }
-        }
-        if !printed_output {
-            println!();
-            if state.command_running {
-                println!("no visible output yet");
-            } else {
-                println!("no visible output");
-            }
-        }
+        print_context_session(&session, head, tail, args.no_output)?;
         println!();
     }
 
+    Ok(())
+}
+
+fn print_context_session(
+    session: &SessionRecord,
+    head_limit: usize,
+    tail_limit: usize,
+    no_output: bool,
+) -> io::Result<()> {
+    let style = Style::plain();
+    let state = read_session_state(&session.id);
+    let cwd = current_dir_for_session(session, &state);
+    let activity = state
+        .last_activity_at
+        .map(time_ago)
+        .unwrap_or_else(|| "unknown".to_string());
+
+    println!("current dir: {}", style.path(shorten_home(&cwd)));
+    println!("last input was {activity}");
+    if state.command_running {
+        let duration = state
+            .command_started_at
+            .map(running_for)
+            .unwrap_or_else(|| "unknown time".to_string());
+        println!("process is running for {}", style.command(duration));
+    } else {
+        println!("no actively running commands");
+    }
+
+    if no_output {
+        return Ok(());
+    }
+
+    let mut printed_output = false;
+    if state.command_running {
+        let head = list_head_lines(&active_output_path(&session.id), head_limit);
+        let tail = list_tail_lines(&session.log, tail_limit);
+        if !head.is_empty() && !contains_line_sequence(&tail, &head) {
+            println!();
+            println!("--- active output head ({} lines) ---", head.len());
+            for line in head {
+                println!("{line}");
+            }
+            printed_output = true;
+        }
+        if !tail.is_empty() {
+            println!();
+            println!("--- recent output ({} lines) ---", tail.len());
+            for line in tail {
+                println!("{line}");
+            }
+            printed_output = true;
+        }
+    } else {
+        let tail = list_tail_lines(&session.log, tail_limit);
+        if !tail.is_empty() {
+            println!();
+            println!("--- recent output ({} lines) ---", tail.len());
+            for line in tail {
+                println!("{line}");
+            }
+            printed_output = true;
+        }
+    }
+    if !printed_output {
+        println!();
+        if state.command_running {
+            println!("no visible output yet");
+        } else {
+            println!("no visible output");
+        }
+    }
     Ok(())
 }
 
@@ -1308,11 +1329,6 @@ fn cmd_kill_session(id: Option<&str>) -> io::Result<()> {
         }
     }
     let _ = fs::remove_dir_all(session_path(&session.id));
-    Ok(())
-}
-
-fn cmd_init_prompt() -> io::Result<()> {
-    println!("run `hitch setup shell` to install shell integration");
     Ok(())
 }
 

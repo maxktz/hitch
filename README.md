@@ -30,10 +30,16 @@ Install shell integration:
 hitch setup shell
 ```
 
-List shared terminals visible from the current project:
+Show terminal state and compact context for the current project:
 
 ```sh
-hitch list
+hitch context
+```
+
+Show more context for one terminal:
+
+```sh
+hitch context 1
 ```
 
 Stop sharing this terminal:
@@ -48,7 +54,7 @@ Send input to a terminal:
 hitch send-keys -t 1 "npm run dev" Enter
 ```
 
-Read recent output:
+Read a faithful terminal transcript:
 
 ```sh
 hitch capture -t 1 -p
@@ -62,7 +68,7 @@ hitch setup skill
 
 ## Notes
 
-- `hitch list` is scoped to the current directory by default.
-- `hitch list --all` shows shared terminals across projects.
+- `hitch context` is scoped to the current directory by default.
+- `hitch context --all` shows shared terminals across projects.
 - `capture-pane`, `kill-session`, and `kill-sessions` are supported compatibility aliases.
 - macOS is the primary target right now.
