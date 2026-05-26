@@ -1,8 +1,8 @@
 - proper installation commands
-  - readme 
+  - readme
   - js -> ts
   - analytics
-
+  - changesets (signed releases)
 
 - show session number in terminal title
 

@@ -682,10 +682,6 @@ fn update_cache_path() -> PathBuf {
     cache_dir().join("update.json")
 }
 
-fn setup_marker_path() -> PathBuf {
-    state_dir().join("setup-complete")
-}
-
 fn sessions_dir() -> PathBuf {
     state_dir().join("sessions")
 }
@@ -736,7 +732,7 @@ fn cmd_start() -> io::Result<()> {
         ));
     }
 
-    ensure_setup_complete()?;
+    ensure_shell_integration()?;
 
     ensure_state_dirs()?;
     let cwd = env::current_dir()?;
@@ -2009,6 +2005,9 @@ fn update_warning() -> Option<String> {
     if cache.install_source != INSTALL_SOURCE {
         return None;
     }
+    if !update_cache_fresh(&cache) {
+        return None;
+    }
     let latest = cache.latest_version?;
     if version_less_than(HITCH_VERSION, &latest) {
         Some(format!(
@@ -2039,7 +2038,12 @@ fn update_cache_stale() -> bool {
     if cache.install_source != INSTALL_SOURCE {
         return true;
     }
-    now_epoch().saturating_sub(cache.checked_at) >= UPDATE_CACHE_TTL_SECS
+    !update_cache_fresh(&cache)
+}
+
+fn update_cache_fresh(cache: &UpdateCache) -> bool {
+    let now = now_epoch();
+    cache.checked_at <= now && now.saturating_sub(cache.checked_at) < UPDATE_CACHE_TTL_SECS
 }
 
 fn read_update_cache() -> Option<UpdateCache> {
@@ -2181,40 +2185,11 @@ fn cmd_print_skill() -> io::Result<()> {
     Ok(())
 }
 
-fn ensure_setup_complete() -> io::Result<()> {
-    if setup_marker_path().exists() {
-        return Ok(());
-    }
-
-    println!("welcome to hitch");
-    println!("running setup first");
-    println!();
-    cmd_setup_wizard()?;
-    mark_setup_complete()?;
-    println!();
-    println!("setup complete, run `hitch` again after restarting existing terminals");
-    process::exit(0);
-}
-
-fn mark_setup_complete() -> io::Result<()> {
-    let marker = setup_marker_path();
-    if let Some(parent) = marker.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(marker, b"1\n")
-}
-
 fn cmd_setup(args: &SetupArgs) -> io::Result<()> {
     match args.command {
-        Some(SetupCommand::Shell) => {
-            cmd_setup_prompt()?;
-            mark_setup_complete()
-        }
+        Some(SetupCommand::Shell) => cmd_setup_prompt(),
         Some(SetupCommand::Skill) => cmd_install_skill(),
-        None => {
-            cmd_setup_wizard()?;
-            mark_setup_complete()
-        }
+        None => cmd_setup_wizard(),
     }
 }
 
@@ -2233,6 +2208,27 @@ fn cmd_setup_wizard() -> io::Result<()> {
     }
 
     Ok(())
+}
+
+fn ensure_shell_integration() -> io::Result<()> {
+    match shell_integration_state()? {
+        ShellIntegrationState::Current => Ok(()),
+        ShellIntegrationState::Outdated => {
+            if env::var_os("HITCH_NO_AUTO_UPDATE_SHELL").is_none() {
+                update_shell_integration_silent()?;
+            }
+            Ok(())
+        }
+        ShellIntegrationState::Missing => {
+            println!("welcome to hitch");
+            println!("running setup first");
+            println!();
+            cmd_setup_wizard()?;
+            println!();
+            println!("setup complete, run `hitch` again after restarting existing terminals");
+            process::exit(0);
+        }
+    }
 }
 
 fn confirm(prompt: &str, default: bool) -> io::Result<bool> {
@@ -2274,6 +2270,45 @@ fn detect_shell() -> String {
 
 fn home_file(name: &str) -> Option<PathBuf> {
     env::var_os("HOME").map(|home| PathBuf::from(home).join(name))
+}
+
+enum ShellIntegrationState {
+    Current,
+    Outdated,
+    Missing,
+}
+
+fn shell_integration_state() -> io::Result<ShellIntegrationState> {
+    let Some((path, block)) = essential_shell_integration() else {
+        return Ok(ShellIntegrationState::Current);
+    };
+    let raw = fs::read_to_string(path).unwrap_or_default();
+    if !has_hitch_marked_block(&raw) {
+        return Ok(ShellIntegrationState::Missing);
+    }
+    if upsert_marked_block(&raw, block) == raw {
+        Ok(ShellIntegrationState::Current)
+    } else {
+        Ok(ShellIntegrationState::Outdated)
+    }
+}
+
+fn update_shell_integration_silent() -> io::Result<()> {
+    let Some((path, block)) = essential_shell_integration() else {
+        return Ok(());
+    };
+    setup_rc_prompt(&path, block)
+}
+
+fn essential_shell_integration() -> Option<(PathBuf, &'static str)> {
+    match detect_shell().as_str() {
+        "zsh" => home_file(".zshrc").map(|path| (path, zsh_prompt_block())),
+        "bash" => home_file(".bashrc").map(|path| (path, bash_prompt_block())),
+        "fish" => {
+            home_file(".config/fish/conf.d/hitch.fish").map(|path| (path, fish_prompt_block()))
+        }
+        _ => None,
+    }
 }
 
 fn setup_zsh_family_prompt() -> io::Result<()> {
@@ -2365,6 +2400,11 @@ fn backup_file(path: &Path) -> io::Result<PathBuf> {
 
 fn upsert_marked_block(raw: &str, block: &str) -> String {
     upsert_marked_block_before(raw, block, "")
+}
+
+fn has_hitch_marked_block(raw: &str) -> bool {
+    raw.contains("# >>> hitch shell integration >>>")
+        || raw.contains("# >>> hitch prompt integration >>>")
 }
 
 fn upsert_marked_block_before(raw: &str, block: &str, anchor: &str) -> String {
