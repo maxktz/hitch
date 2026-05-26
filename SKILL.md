@@ -1,78 +1,101 @@
 ---
 name: hitch
-description: Use when you need to inspect or control a terminal the user has explicitly shared with agents, or before starting a dev server, watcher, tunnel, REPL, build, or log tail that may already be running.
+description: Use when you need to inspect or control user's own terminals, or if asked to do something with user's specific terminal, or before starting a dev server, watcher, tunnel, REPL, build, or log tail that may already be running by the user.
 ---
 
-# Hitch
+If skill activated with no concrete task provided - don't act, just remember it. This is reference knowledge for you on how to use hitch.
 
-`hitch` lets you — the agent — inspect and control shared terminals the user already has open (dev servers, watchers, tunnels, REPLs, builds, log tails). Use `context` for terminal state and compact output; use `capture` only when exact transcript details matter. Its `capture` and `send-keys` commands intentionally mirror the equivalent tmux workflows.
+`hitch` CLI for agents to see and control shared terminal sessions that the user already has opened.
 
-This is reference knowledge for you, not a script to run on sight. **With no concrete task, do nothing** — don't probe terminals or explain hitch to the user. Continue with whatever the user actually asked for.
+Useful for tasks when you need to collaborate with the user in the same terminal and you both want to interact with it. Like long running tasks, dev servers, watchers, tunnels, builds. Think of it like tmux but with proper agent tools.
 
-## When to reach for it
+## Command Reference
 
-The moment you're about to start a dev server, watcher, tunnel, REPL, build, or log tail, first check for an existing shared terminal instead of spawning a duplicate:
+### `hitch context [TERMINAL]`
 
-```sh
-hitch context
-```
+Use first. Shows compact terminal state and recent useful output.
 
-Use `hitch context --all` only when you intentionally need terminals outside the current project. Plain `hitch context` is project-scoped.
+Forms:
 
-If `hitch context` shows the needed server, watcher, tunnel, REPL, or log already running, use that terminal instead of starting a duplicate. Use the exact numeric id from `hitch context`.
+- `hitch context` - project terminals only
+- `hitch context <terminal>` - one terminal, more detailed output, usually paired with specific --tail
+- `hitch context --dir <dir>` - terminals whose origin or current dir is inside `<dir>`
+- `hitch context --all` - all terminals, includes outside of the project.
 
-Hitch terminal ids are always numbers. If the user says "hitch 2", "session 2", or "terminal 2", they probably mean hitch terminal id `2`.
+Options:
 
-Read compact context for one terminal:
+- `--tail <n>` - recent visible output lines. Default: 20, or 80 for `context <terminal>`
+- `--head <n>` - active process head lines. Default: 5, or 10 for `context <terminal>`
 
-```sh
-hitch context <terminal>
-```
+Output is summarized for agents: no colors, blank lines removed.
 
-Read faithful transcript output only when exact details matter:
+### `hitch send-keys -t <terminal> [OPTIONS] <keys...>`
 
-```sh
-hitch capture -t <terminal> -p -S -100
-```
+Similar to how tmux send-keys works.
+Sends input to a terminal.
+If `--tail` or `--wait` is passed, it also prints new output produced after sending keys. (will not include previous history output)
 
-Send a command to an idle shell:
+Common keys:
 
-```sh
-hitch send-keys -t <terminal> C-u "command" Enter
-```
+- `Enter`
+- `Tab`
+- `Escape` / `Esc`
+- `Space`
+- `Backspace` / `BSpace`
+- `C-c`, `C-u`, etc.
 
-When sending commands, prefer starting with `C-u`; it clears any partially typed prompt input before sending the command.
+Options:
 
-Before sending normal commands, check `hitch context`. If the terminal is actively running something, only interrupt/restart it when the user asked for that or it is clearly required.
+- `-t, --target <terminal>` - terminal id.
+- `--wait output` - wait until new output appears.
+- `--wait finish` - wait until the foreground command finishes.
+- `--wait quiet:<duration>` - wait until output stops changing for duration, e.g. `quiet:2s`.
+- `--wait time:<duration>` - wait fixed time before returning output, e.g. `time:5s`.
+- `--timeout <duration>` - max wait time. Default: `30s`.
+- `--tail <n>` - print this many new visible output lines after sending.
+- `--force` - send input even if the terminal has a running process.
 
-Interrupt only when safe or requested:
+> Options must come before keys!
 
-```sh
-hitch send-keys -t <terminal> C-c
-```
+Durations support `ms`, `s`, `m`.
 
-If unsure, inspect compact context first:
+Examples:
 
-```sh
-hitch context <terminal>
-```
+- `hitch send-keys -t 1 C-u "npm test" Enter`
+- `hitch send-keys -t 1 --wait quiet:2s --tail 40 C-u "npm run dev" Enter`
+- `hitch send-keys -t 1 --wait finish --tail 80 C-u "npm test" Enter`
 
-## Patterns
+Output behavior:
 
-Restart a dev server in the terminal that was already running it:
+- Without `--wait` or `--tail`, `send-keys` sends input but prints nothing.
+- If `--wait` is set, Hitch waits, then prints new output from that terminal.
+- If `--tail <n>` is set, Hitch prints up to `<n>` new visible output lines after sending.
+- `--wait` without `--tail` defaults to printing up to 40 new visible output lines, so if you expect an output shorter than 40 lines, passing --tail is not necessary
 
-```sh
-hitch send-keys -t 2 C-c C-u "npm run dev" Enter
-```
+--wait is made to be used instead of commands like "sleep", to not be polling the terminal yourself, prefer using it if needed.
 
-Inspect exact recent logs before acting:
+While waiting until finish of command, and expect it to be longer than 30s, pass custom --timeout. But usually you may not want to not wait such longer for processes. Or you may choose to wait for longer commands on your own, by polling output tail after a while.
 
-```sh
-hitch capture -t 2 -p -S -100
-```
+### `hitch capture -t <terminal> [OPTIONS]`
 
-Run a command in an idle shell:
+Mirrors tmux capture-pane behavior. To capture one terminal, prefer `context <terminal>` over `capture`; use `capture` only if more options needed
 
-```sh
-hitch send-keys -t 2 C-u "npm test" Enter
-```
+Also works with alias `hitch capture-pane`.
+
+Options:
+
+- `-t <terminal>` - terminal id.
+- `-p` - print to stdout, tmux-compatible.
+- `-S <start>` - start line. Negative values count from the end, e.g. `-S -100`.
+- `-E <end>` - end line.
+- `-e` - raw/escape output, tmux-compatible.
+
+Accepted compatibility no-op flags:
+
+- `-C`, `-J`, `-N`, `-T`, `-a`, `-q`
+
+## Rules
+
+- Terminal ids are numbers. If user says "hitch 2", "terminal 2", or "session 2", they likely mean terminal id `2`.
+- Before interrupting user's processes with `C-c`, make sure the user asked for it or it is clearly necessary.
+- Do not send shell commands to terminals with running processes unless you intend to interact with that process. Hitch refuses this by default and prints terminal context; use `--force` only when intentional. A sequence starting with `C-c` is allowed because it interrupts the running process first.

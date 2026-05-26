@@ -54,6 +54,12 @@ Send input to a terminal:
 hitch send-keys -t 1 "npm run dev" Enter
 ```
 
+Send input, wait for output to settle, and print new output:
+
+```sh
+hitch send-keys -t 1 --wait quiet:2s --tail 40 "npm run dev" Enter
+```
+
 Read a faithful terminal transcript:
 
 ```sh
