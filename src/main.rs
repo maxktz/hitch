@@ -947,11 +947,13 @@ fn print_start_message(session_id: &str) {
     println!();
     println!("{}", style.logo("⣇⡀ ⠄⢀⣆⡀ ⣀⡀⢸⣀"));
     println!("{}", style.logo("⠇⠸ ⠇ ⠣⠄⠘⠤⠄⠸ ⠇"));
+    println!();
     println!(
-        "terminal shared as {} {}",
-        style.session_id(session_id),
-        style.muted("(Ctrl-\\ to stop)")
+        "terminal {} is now shared with your agents",
+        style.session_id(session_id)
     );
+    println!();
+    println!("{}", style.muted("run `hitch off` to stop sharing"));
     println!();
     let mut printed_warning = false;
     if let Some(warning) = outdated_skill_warning() {
