@@ -6,7 +6,7 @@
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
       <source media="(prefers-color-scheme: light)" srcset="assets/logo-light.svg">
-      <img alt="Hitch" src="assets/logo-light.svg" height="90">
+      <img alt="Hitch" src="assets/logo-light.svg" height="72">
     </picture>
   </a>
 </p>
