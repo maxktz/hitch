@@ -1270,7 +1270,6 @@ fn attach_socket(socket: &str, session_id: &str, log_path: Option<&str>) -> io::
     let _restore = TermRestore(original);
     let _winch_restore = WinchRestore::install()?;
     let style = Style::plain();
-    let exit_message = || style.muted(format!("[hitch stopped sharing {session_id}]"));
 
     send_packet(&mut stream, MSG_ATTACH, &[])?;
     send_winch(&mut stream)?;
@@ -1311,7 +1310,7 @@ fn attach_socket(socket: &str, session_id: &str, log_path: Option<&str>) -> io::
                 write_parent_cwd_sync(session_id);
                 if stop_marker_path(session_id).exists() {
                     let _ = fs::remove_file(stop_marker_path(session_id));
-                    println!("\r\n{}", exit_message());
+                    print_stop_message(session_id)?;
                     return Ok(0);
                 }
                 return Ok(if log_path.is_some() {
@@ -1332,12 +1331,23 @@ fn attach_socket(socket: &str, session_id: &str, log_path: Option<&str>) -> io::
             if is_detach_key(buf[0]) {
                 send_packet(&mut stream, MSG_DETACH, &[])?;
                 write_parent_cwd_sync(session_id);
-                println!("\r\n{}", exit_message());
+                print_stop_message(session_id)?;
                 return Ok(0);
             }
             send_packet(&mut stream, MSG_PUSH, &buf[..len as usize])?;
         }
     }
+}
+
+fn print_stop_message(session_id: &str) -> io::Result<()> {
+    let style = Style::stdout();
+    let mut stdout = io::stdout();
+    write!(
+        stdout,
+        "\r\x1b[2K{}\r\n",
+        style.muted(format!("[hitch stopped sharing {session_id}]"))
+    )?;
+    stdout.flush()
 }
 
 fn write_parent_cwd_sync(session_id: &str) {
