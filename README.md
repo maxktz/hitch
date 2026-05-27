@@ -1,80 +1,73 @@
-# hitch
+<br>
 
-`hitch` gives AI coding agents visibility into terminals you already have running.
+<p align="center">
+  <a name="readme-top"></a>
+  <a href="https://github.com/maxktz/hitch">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
+      <source media="(prefers-color-scheme: light)" srcset="assets/logo-light.svg">
+      <img alt="Hitch" src="assets/logo-light.svg" height="90">
+    </picture>
+  </a>
+</p>
 
-It shares lightweight shell terminals and lets agents inspect or interact with them before spawning duplicate dev servers, tunnels, watchers, or REPLs.
+<h3 align="center">Share your terminal with coding agents</h3>
+
+<p align="center">
+  Let agents inspect and control the terminals you already have running.
+</p>
+
+<p align="center">
+  <a href="https://github.com/maxktz/hitch"><strong>GitHub</strong></a> ·
+  <a href="https://www.npmjs.com/package/hitch-cli"><strong>NPM</strong></a> ·
+  <a href="https://x.com/maxktz"><strong>Author</strong></a>
+</p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/hitch-cli"><img src="https://img.shields.io/npm/v/hitch-cli?style=flat-square&color=333" alt="npm version"></a>
+  <a href="https://www.npmjs.com/package/hitch-cli"><img src="https://img.shields.io/npm/l/hitch-cli?style=flat-square&color=333" alt="License"></a>
+  <a href="https://www.npmjs.com/package/hitch-cli"><img src="https://img.shields.io/npm/dt/hitch-cli?style=flat-square&color=333" alt="npm downloads"></a>
+</p>
+
+---
+
+## What is Hitch?
+
+Hitch is a small CLI for sharing real shell terminals with AI coding agents. Start Hitch in a terminal, then agents can see compact context, send keys, and inspect output without starting duplicate dev servers, watchers, tunnels, or REPLs.
+
+It is not a terminal multiplexer UI. Your terminal still feels like a normal shell; Hitch just proxies input/output, records useful context, and exposes agent-friendly commands.
 
 ## Install
-
-Install with npm:
 
 ```sh
 npm install -g hitch-cli
 hitch
 ```
 
-Or build from source:
+The first run installs shell integration. Restart existing terminals after setup so your shell picks it up.
 
-```sh
-cargo install --git https://github.com/maxktz/hitch
-```
-
-The first `hitch` run installs shell integration before sharing a terminal. Restart existing terminals after setup so your shell picks it up.
-
-Supported npm platforms:
-
-- macOS arm64 / x64
-- Linux arm64 / x64
-
-## Release
-
-Create a release commit and tag:
-
-```sh
-npm run release -- 0.1.0
-git push origin main --tags
-```
-
-GitHub Actions builds native Unix binaries, publishes `hitch-cli` to npm, and creates a GitHub release. Npm release binaries check for npm updates in the background using a 6 hour cache; local source builds do not check npm.
+Supported platforms: macOS and Linux on arm64 or x64.
 
 ## Usage
 
-Start sharing this terminal:
+Start sharing the current terminal:
 
 ```sh
 hitch
+```
+
+Stop sharing:
+
+```sh
+unhitch
 # or
-hitch on
+hitch off
 ```
 
-Run the setup wizard:
-
-```sh
-hitch setup
-```
-
-Install shell integration directly:
-
-```sh
-hitch setup shell
-```
-
-Show terminal state and compact context for the current project:
+Show shared terminals for the current project:
 
 ```sh
 hitch context
-```
-
-Show more context for one terminal:
-
-```sh
-hitch context 1
-```
-
-Stop sharing this terminal:
-
-```sh
-hitch off
 ```
 
 Send input to a terminal:
@@ -83,10 +76,10 @@ Send input to a terminal:
 hitch send-keys -t 1 "npm run dev" Enter
 ```
 
-Send input, wait for output to settle, and print new output:
+Wait for output to settle and print what changed:
 
 ```sh
-hitch send-keys -t 1 --wait quiet:2s --tail 40 "npm run dev" Enter
+hitch send-keys -t 1 --wait quiet:1s --tail 40 "npm test" Enter
 ```
 
 Read a faithful terminal transcript:
@@ -95,22 +88,29 @@ Read a faithful terminal transcript:
 hitch capture -t 1 -p
 ```
 
-Install the optional agent skill:
+## Agents
+
+Install the Codex/agent skill:
 
 ```sh
 hitch setup skill
 ```
 
-Show version:
+Agents should usually start with:
 
 ```sh
-hitch -v
+hitch context
 ```
 
-## Notes
+Then use `send-keys` only when they intentionally want to interact with a terminal. Hitch refuses to send input into a running process by default unless `--force` is used.
 
-- `hitch context` is scoped to the current directory by default.
-- `hitch context --all` shows shared terminals across projects.
-- `hitch` automatically updates an existing Hitch shell integration block when needed.
-- `capture-pane`, `kill-session`, and `kill-sessions` are supported compatibility aliases.
-- Windows is not supported.
+## Release
+
+Create a release commit and tag:
+
+```sh
+npm run release -- 0.1.1
+git push origin main --tags
+```
+
+GitHub Actions builds native binaries, publishes `hitch-cli` to npm, and creates a GitHub release.
