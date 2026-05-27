@@ -388,9 +388,17 @@ impl CommandTracker {
     }
 }
 
-#[derive(Default)]
 struct TitleFilter {
     state: u8,
+    code: u8,
+    title: Vec<u8>,
+    mode: TitleFilterMode,
+    cwd: Option<String>,
+}
+
+enum TitleFilterMode {
+    Strip,
+    Rewrite { prefix: Vec<u8> },
 }
 
 #[derive(Default)]
@@ -408,6 +416,32 @@ struct AltScreenTracker {
 }
 
 impl TitleFilter {
+    fn strip() -> Self {
+        Self {
+            state: 0,
+            code: 0,
+            title: Vec::new(),
+            mode: TitleFilterMode::Strip,
+            cwd: None,
+        }
+    }
+
+    fn rewrite(session_id: &str) -> Self {
+        Self {
+            state: 0,
+            code: 0,
+            title: Vec::new(),
+            mode: TitleFilterMode::Rewrite {
+                prefix: format!("#{session_id} ").into_bytes(),
+            },
+            cwd: None,
+        }
+    }
+
+    fn set_cwd(&mut self, cwd: Option<String>) {
+        self.cwd = cwd;
+    }
+
     fn filter(&mut self, input: &[u8]) -> Vec<u8> {
         let mut out = Vec::with_capacity(input.len());
         for &b in input {
@@ -430,6 +464,7 @@ impl TitleFilter {
                 }
                 2 => {
                     if matches!(b, b'0' | b'1' | b'2') {
+                        self.code = b;
                         self.state = 3;
                     } else {
                         out.push(0x1b);
@@ -440,29 +475,94 @@ impl TitleFilter {
                 }
                 3 => {
                     if b == b';' {
+                        self.title.clear();
                         self.state = 4;
                     } else {
                         out.push(0x1b);
                         out.push(b']');
+                        out.push(self.code);
                         out.push(b);
                         self.state = 0;
                     }
                 }
                 4 => {
                     if b == 0x07 {
+                        self.emit_title(&mut out, &[0x07]);
                         self.state = 0;
                     } else if b == 0x1b {
                         self.state = 5;
+                    } else {
+                        self.title.push(b);
                     }
                 }
                 5 => {
-                    self.state = if b == b'\\' { 0 } else { 4 };
+                    if b == b'\\' {
+                        self.emit_title(&mut out, &[0x1b, b'\\']);
+                        self.state = 0;
+                    } else {
+                        self.title.push(0x1b);
+                        self.title.push(b);
+                        self.state = 4;
+                    }
                 }
                 _ => self.state = 0,
             }
         }
         out
     }
+
+    fn emit_title(&self, out: &mut Vec<u8>, terminator: &[u8]) {
+        let TitleFilterMode::Rewrite { prefix } = &self.mode else {
+            return;
+        };
+        out.push(0x1b);
+        out.push(b']');
+        out.push(self.code);
+        out.push(b';');
+        out.extend_from_slice(prefix);
+        if let Some(title) = self.normalized_title() {
+            out.extend_from_slice(title.as_bytes());
+        } else {
+            out.extend_from_slice(&self.title);
+        }
+        out.extend_from_slice(terminator);
+    }
+
+    fn normalized_title(&self) -> Option<String> {
+        let cwd = self.cwd.as_deref()?;
+        let title = std::str::from_utf8(&self.title).ok()?.trim();
+        if is_shell_idle_title(title) {
+            return Some(shorten_home(cwd));
+        }
+        None
+    }
+}
+
+fn is_shell_idle_title(title: &str) -> bool {
+    let Some((user, rest)) = title.split_once('@') else {
+        return false;
+    };
+    let Some((host, path)) = rest.split_once(':') else {
+        return false;
+    };
+    is_shell_title_name(user)
+        && is_shell_title_host(host)
+        && !path.is_empty()
+        && !path.chars().any(char::is_whitespace)
+}
+
+fn is_shell_title_name(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
+fn is_shell_title_host(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-'))
 }
 
 impl AltScreenLogFilter {
@@ -821,7 +921,8 @@ fn master_loop(
         .append(true)
         .open(&record.log)?;
     let mut clients: Vec<Client> = Vec::new();
-    let mut filter = TitleFilter::default();
+    let mut filter = TitleFilter::rewrite(&record.id);
+    let mut log_title_filter = TitleFilter::strip();
     let mut log_filter = AltScreenLogFilter::default();
     let mut alt_screen = AltScreenTracker::default();
     let mut commands = CommandTracker::new(record, child_pid);
@@ -864,6 +965,7 @@ fn master_loop(
         }
         if rc == 0 {
             commands.refresh(pty_fd);
+            filter.set_cwd(commands.state.current_dir.clone());
             broadcast_cwd_if_changed(&commands, &mut last_broadcast_cwd, &mut clients);
             continue;
         }
@@ -883,10 +985,12 @@ fn master_loop(
 
         if unsafe { libc::FD_ISSET(pty_fd, &readfds) } {
             commands.refresh(pty_fd);
+            filter.set_cwd(commands.state.current_dir.clone());
             broadcast_cwd_if_changed(&commands, &mut last_broadcast_cwd, &mut clients);
             if !drain_pty_output(
                 pty_fd,
                 &mut filter,
+                &mut log_title_filter,
                 &mut log_filter,
                 &mut alt_screen,
                 &mut log,
@@ -941,6 +1045,7 @@ fn master_loop(
 fn drain_pty_output(
     pty_fd: RawFd,
     filter: &mut TitleFilter,
+    log_title_filter: &mut TitleFilter,
     log_filter: &mut AltScreenLogFilter,
     alt_screen: &mut AltScreenTracker,
     log: &mut fs::File,
@@ -956,6 +1061,7 @@ fn drain_pty_output(
         process_pty_output_chunk(
             &buf[..len as usize],
             filter,
+            log_title_filter,
             log_filter,
             alt_screen,
             log,
@@ -971,6 +1077,7 @@ fn drain_pty_output(
 fn process_pty_output_chunk(
     raw: &[u8],
     filter: &mut TitleFilter,
+    log_title_filter: &mut TitleFilter,
     log_filter: &mut AltScreenLogFilter,
     alt_screen: &mut AltScreenTracker,
     log: &mut fs::File,
@@ -988,7 +1095,8 @@ fn process_pty_output_chunk(
         return;
     }
     if !was_alt_screen || !alt_screen.alt_screen {
-        let loggable = log_filter.filter(filtered.as_ref());
+        let title_free = log_title_filter.filter(raw);
+        let loggable = log_filter.filter(&title_free);
         if !loggable.is_empty() {
             let _ = log.write_all(&loggable);
             commands.capture_output(&loggable);
@@ -1124,6 +1232,7 @@ fn handle_packet(
         }
         MSG_ATTACH => {
             client.attached = true;
+            commands.refresh(pty_fd);
             if let Some(cwd) = commands.state.current_dir.as_deref() {
                 let _ = client.stream.write_all(&osc7_cwd(cwd));
             }
@@ -3286,4 +3395,40 @@ fn parse_csi_params(bytes: &[u8]) -> Vec<u16> {
         .split(';')
         .filter_map(|part| part.parse::<u16>().ok())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_shell_idle_titles() {
+        assert!(is_shell_idle_title("maxktz@Maxs-MacBook-Pro:~/dev/testapp"));
+        assert!(is_shell_idle_title("max.ktz@host.local:/tmp/app"));
+
+        assert!(!is_shell_idle_title("build ready @ 12:30"));
+        assert!(!is_shell_idle_title("server@example.com: listening"));
+        assert!(!is_shell_idle_title("maxktz@:~/dev/testapp"));
+        assert!(!is_shell_idle_title("maxktz@Maxs-MacBook-Pro"));
+    }
+
+    #[test]
+    fn rewrites_idle_title_to_current_dir() {
+        let mut filter = TitleFilter::rewrite("3");
+        filter.set_cwd(Some("/tmp/testapp".to_string()));
+
+        let output = filter.filter(b"\x1b]2;maxktz@Maxs-MacBook-Pro:~/dev/testapp\x07");
+
+        assert_eq!(output, b"\x1b]2;#3 /tmp/testapp\x07");
+    }
+
+    #[test]
+    fn preserves_non_idle_titles() {
+        let mut filter = TitleFilter::rewrite("3");
+        filter.set_cwd(Some("/tmp/testapp".to_string()));
+
+        let output = filter.filter(b"\x1b]2;server@example.com: listening\x07");
+
+        assert_eq!(output, b"\x1b]2;#3 server@example.com: listening\x07");
+    }
 }
