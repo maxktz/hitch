@@ -2794,7 +2794,8 @@ function _hitch_prompt_segment() {
 
 if [[ -z "${HITCH_PROMPT_INSTALLED:-}" && -z "${POWERLEVEL9K_LEFT_PROMPT_ELEMENTS:-}" ]]; then
   HITCH_PROMPT_INSTALLED=1
-  PROMPT='$(_hitch_prompt_segment)'"$PROMPT"
+  setopt prompt_subst
+  PROMPT='$(_hitch_prompt_segment)'${PROMPT}
 fi
 
 function _hitch_run() {
@@ -2846,12 +2847,12 @@ function hitch-dev() {
 fn bash_prompt_block() -> &'static str {
     r#"# >>> hitch shell integration >>>
 _hitch_prompt_segment() {
-  [[ -n "${HITCH_SESSION:-}" ]] && printf '\[\033[32m\]#%s\[\033[0m\] ' "$HITCH_SESSION"
+  [[ -n "${HITCH_SESSION:-}" ]] && printf '#%s ' "$HITCH_SESSION"
 }
 
 if [[ -z "${HITCH_PROMPT_INSTALLED:-}" ]]; then
   HITCH_PROMPT_INSTALLED=1
-  PS1='$(_hitch_prompt_segment)'"$PS1"
+  PS1='\[\033[32m\]$(_hitch_prompt_segment)\[\033[0m\]'"$PS1"
 fi
 
 _hitch_run() {
