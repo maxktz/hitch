@@ -38,6 +38,7 @@ const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
 const DIM: &str = "\x1b[2m";
 const GREEN: &str = "\x1b[32m";
+const YELLOW: &str = "\x1b[33m";
 const RED: &str = "\x1b[31m";
 const ATTACH_HISTORY_BYTES: u64 = 64 * 1024;
 const ACTIVE_COMMAND_HEAD_LINES: usize = 5;
@@ -222,8 +223,16 @@ impl Style {
         self.paint("hitch", &[GREEN])
     }
 
+    fn logo(&self, value: impl AsRef<str>) -> String {
+        self.paint(value, &[YELLOW])
+    }
+
     fn id(&self, value: impl AsRef<str>) -> String {
         self.paint(value, &[GREEN])
+    }
+
+    fn session_id(&self, value: impl AsRef<str>) -> String {
+        self.id(format!("#{}", value.as_ref()))
     }
 
     fn path(&self, value: impl AsRef<str>) -> String {
@@ -703,11 +712,7 @@ fn run() -> io::Result<()> {
         };
     }
 
-    if env::var_os("HITCH_SESSION").is_some() {
-        cmd_status(&StatusArgs { debug: false })
-    } else {
-        cmd_start()
-    }
+    cmd_start()
 }
 
 fn top_level_skill_requested() -> bool {
@@ -835,10 +840,13 @@ fn next_session_id() -> io::Result<String> {
 
 fn cmd_start() -> io::Result<()> {
     if let Ok(session) = env::var("HITCH_SESSION") {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            format!("already sharing terminal {session}"),
-        ));
+        let style = Style::stdout();
+        println!(
+            "terminal already shared as {} {}",
+            style.session_id(session),
+            style.muted("(Ctrl-\\ to stop)")
+        );
+        return Ok(());
     }
 
     ensure_shell_integration()?;
@@ -867,12 +875,15 @@ fn cmd_start() -> io::Result<()> {
     )?;
 
     let style = Style::stdout();
+    println!();
+    println!("{}", style.logo("⣇⡀ ⠄⢀⣆⡀ ⣀⡀⢸⣀"));
+    println!("{}", style.logo("⠇⠸ ⠇ ⠣⠄⠘⠤⠄⠸ ⠇"));
     println!(
-        "{} sharing terminal {} {}",
-        style.brand(),
-        style.id(&id),
+        "terminal shared as {} {}",
+        style.session_id(&id),
         style.muted("(Ctrl-\\ to stop)")
     );
+    println!();
     if let Some(warning) = outdated_skill_warning() {
         println!("{}", style.muted(warning));
     }
@@ -2937,7 +2948,11 @@ fn cmd_status(args: &StatusArgs) -> io::Result<()> {
         println!("not sharing this terminal, run `{}`", style.brand());
         return Ok(());
     };
-    println!("sharing this terminal as {}", style.id(session));
+    println!(
+        "sharing this terminal as {} {}",
+        style.session_id(session),
+        style.muted("(Ctrl-\\ to stop)")
+    );
     if args.debug {
         if let Ok(socket) = env::var("HITCH_SOCKET") {
             println!("socket {}", style.path(socket));
