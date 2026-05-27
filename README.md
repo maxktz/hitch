@@ -78,4 +78,4 @@ hitch setup # recommended, uses 'npx skills'
 npx skills add https://github.com/maxktz/hitch skill hitch
 ```
 
-> If you're curious how this works for the agent, run `hitch --skill` to see the skill content :D
+> If you're curious how this works for the agent, run `hitch --skill` to see the content :D
