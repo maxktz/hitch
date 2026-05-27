@@ -48,6 +48,7 @@ const CONTEXT_SINGLE_TAIL_LINES: usize = 80;
 const CONTEXT_LINE_MAX_CHARS: usize = 1000;
 const CONTEXT_OUTPUT_WINDOW_BYTES: u64 = 64 * 1024;
 const CONTEXT_OUTPUT_MAX_BYTES: u64 = 1024 * 1024;
+const UNIX_SOCKET_PATH_LIMIT: usize = 100;
 const EXIT_PARENT_CODE: i32 = 42;
 static WINCH_PENDING: AtomicBool = AtomicBool::new(false);
 
@@ -808,6 +809,28 @@ fn session_path(id: &str) -> PathBuf {
     sessions_dir().join(id)
 }
 
+fn socket_path(id: &str) -> PathBuf {
+    socket_path_in_temp(id, process::id(), &env::temp_dir())
+}
+
+fn socket_path_in_temp(id: &str, pid: u32, temp_dir: &Path) -> PathBuf {
+    let name = format!("hitch-{pid}-{id}.sock");
+    let path = temp_dir.join(&name);
+    if path.as_os_str().to_string_lossy().len() < UNIX_SOCKET_PATH_LIMIT {
+        path
+    } else {
+        PathBuf::from("/tmp").join(name)
+    }
+}
+
+fn prepare_socket_path(path: &Path) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let _ = fs::remove_file(path);
+    Ok(())
+}
+
 fn stop_marker_path(id: &str) -> PathBuf {
     session_path(id).join("stopped")
 }
@@ -855,14 +878,16 @@ fn cmd_start() -> io::Result<()> {
     let cwd = env::current_dir()?;
     let id = next_session_id()?;
     let dir = session_path(&id);
+    let socket = socket_path(&id);
     fs::create_dir_all(&dir)?;
+    prepare_socket_path(&socket)?;
     let _ = fs::remove_file(stop_marker_path(&id));
 
     let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     let record = SessionRecord {
         id: id.clone(),
         cwd: cwd.to_string_lossy().into_owned(),
-        socket: dir.join("session.sock").to_string_lossy().into_owned(),
+        socket: socket.to_string_lossy().into_owned(),
         log: dir.join("output.log").to_string_lossy().into_owned(),
         pid_file: dir.join("child.pid").to_string_lossy().into_owned(),
         master_pid_file: dir.join("master.pid").to_string_lossy().into_owned(),
@@ -873,23 +898,6 @@ fn cmd_start() -> io::Result<()> {
         dir.join("session.json"),
         serde_json::to_string_pretty(&record).unwrap(),
     )?;
-
-    let style = Style::stdout();
-    println!();
-    println!("{}", style.logo("⣇⡀ ⠄⢀⣆⡀ ⣀⡀⢸⣀"));
-    println!("{}", style.logo("⠇⠸ ⠇ ⠣⠄⠘⠤⠄⠸ ⠇"));
-    println!(
-        "terminal shared as {} {}",
-        style.session_id(&id),
-        style.muted("(Ctrl-\\ to stop)")
-    );
-    println!();
-    if let Some(warning) = outdated_skill_warning() {
-        println!("{}", style.muted(warning));
-    }
-    if let Some(warning) = update_warning() {
-        println!("{}", style.muted(warning));
-    }
 
     let initial_winsize = terminal_winsize();
     let listener = UnixListener::bind(&record.socket)?;
@@ -913,10 +921,30 @@ fn cmd_start() -> io::Result<()> {
 
     fs::write(&record.master_pid_file, format!("{master_pid}\n"))?;
     drop(listener);
+    print_start_message(&record.id);
     maybe_refresh_update_cache();
     let status = attach_socket(&record.socket, &record.id, None)?;
     let _ = fs::remove_dir_all(&dir);
     process::exit(status);
+}
+
+fn print_start_message(session_id: &str) {
+    let style = Style::stdout();
+    println!();
+    println!("{}", style.logo("⣇⡀ ⠄⢀⣆⡀ ⣀⡀⢸⣀"));
+    println!("{}", style.logo("⠇⠸ ⠇ ⠣⠄⠘⠤⠄⠸ ⠇"));
+    println!(
+        "terminal shared as {} {}",
+        style.session_id(session_id),
+        style.muted("(Ctrl-\\ to stop)")
+    );
+    println!();
+    if let Some(warning) = outdated_skill_warning() {
+        println!("{}", style.muted(warning));
+    }
+    if let Some(warning) = update_warning() {
+        println!("{}", style.muted(warning));
+    }
 }
 
 fn master_loop(
@@ -3492,5 +3520,15 @@ mod tests {
         );
 
         assert_eq!(truncate_context_line(&line), Cow::Owned::<str>(expected));
+    }
+
+    #[test]
+    fn socket_path_falls_back_when_temp_dir_is_too_long() {
+        let long_temp = PathBuf::from(format!("/{}", "x".repeat(120)));
+
+        assert_eq!(
+            socket_path_in_temp("7", 1234, &long_temp),
+            PathBuf::from("/tmp/hitch-1234-7.sock")
+        );
     }
 }
