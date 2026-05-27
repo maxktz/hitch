@@ -44,6 +44,7 @@ const ACTIVE_COMMAND_HEAD_LINES: usize = 5;
 const CONTEXT_TAIL_LINES: usize = 20;
 const CONTEXT_SINGLE_HEAD_LINES: usize = 10;
 const CONTEXT_SINGLE_TAIL_LINES: usize = 80;
+const CONTEXT_LINE_MAX_CHARS: usize = 1000;
 const CONTEXT_OUTPUT_WINDOW_BYTES: u64 = 64 * 1024;
 const CONTEXT_OUTPUT_MAX_BYTES: u64 = 1024 * 1024;
 const EXIT_PARENT_CODE: i32 = 42;
@@ -1703,7 +1704,7 @@ fn print_context_session_with(
                 format!("--- active output head ({} lines) ---", head.len()),
             );
             for line in head {
-                context_line(stderr, line);
+                context_output_line(stderr, &line);
             }
             printed_output = true;
         }
@@ -1714,7 +1715,7 @@ fn print_context_session_with(
                 format!("--- recent output ({} lines) ---", tail.len()),
             );
             for line in tail {
-                context_line(stderr, line);
+                context_output_line(stderr, &line);
             }
             printed_output = true;
         }
@@ -1727,7 +1728,7 @@ fn print_context_session_with(
                 format!("--- recent output ({} lines) ---", tail.len()),
             );
             for line in tail {
-                context_line(stderr, line);
+                context_output_line(stderr, &line);
             }
             printed_output = true;
         }
@@ -1741,6 +1742,24 @@ fn print_context_session_with(
         }
     }
     Ok(())
+}
+
+fn context_output_line(stderr: bool, line: &str) {
+    context_line(stderr, truncate_context_line(line));
+}
+
+fn truncate_context_line(line: &str) -> Cow<'_, str> {
+    let mut chars = line.chars();
+    let truncated = chars
+        .by_ref()
+        .take(CONTEXT_LINE_MAX_CHARS)
+        .collect::<String>();
+    let remaining = chars.count();
+    if remaining == 0 {
+        Cow::Borrowed(line)
+    } else {
+        Cow::Owned(format!("{truncated}... [truncated {remaining} chars]"))
+    }
 }
 
 fn read_sessions() -> io::Result<Vec<SessionRecord>> {
@@ -3430,5 +3449,23 @@ mod tests {
         let output = filter.filter(b"\x1b]2;server@example.com: listening\x07");
 
         assert_eq!(output, b"\x1b]2;#3 server@example.com: listening\x07");
+    }
+
+    #[test]
+    fn context_lines_at_limit_are_unchanged() {
+        let line = "a".repeat(CONTEXT_LINE_MAX_CHARS);
+
+        assert_eq!(truncate_context_line(&line), Cow::Borrowed(line.as_str()));
+    }
+
+    #[test]
+    fn context_lines_are_truncated_by_characters() {
+        let line = format!("{}é漢", "a".repeat(CONTEXT_LINE_MAX_CHARS));
+        let expected = format!(
+            "{}... [truncated 2 chars]",
+            "a".repeat(CONTEXT_LINE_MAX_CHARS)
+        );
+
+        assert_eq!(truncate_context_line(&line), Cow::Owned::<str>(expected));
     }
 }
