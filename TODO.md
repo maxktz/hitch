@@ -10,6 +10,8 @@
 
 agent skill:
   - prefer send-keys in parallel over sequential
+  - fix agent using --dir 
+  - fix agents inspecting each terminal separately
 
 - shell hooks wrapping commands
 

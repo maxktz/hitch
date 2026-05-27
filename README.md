@@ -44,7 +44,7 @@ Start sharing this terminal:
 ```sh
 hitch
 # or
-hitch start
+hitch on
 ```
 
 Run the setup wizard:
@@ -74,7 +74,7 @@ hitch context 1
 Stop sharing this terminal:
 
 ```sh
-hitch stop
+hitch off
 ```
 
 Send input to a terminal:

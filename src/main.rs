@@ -43,6 +43,8 @@ const ACTIVE_COMMAND_HEAD_LINES: usize = 5;
 const CONTEXT_TAIL_LINES: usize = 20;
 const CONTEXT_SINGLE_HEAD_LINES: usize = 10;
 const CONTEXT_SINGLE_TAIL_LINES: usize = 80;
+const CONTEXT_OUTPUT_WINDOW_BYTES: u64 = 64 * 1024;
+const CONTEXT_OUTPUT_MAX_BYTES: u64 = 1024 * 1024;
 const EXIT_PARENT_CODE: i32 = 42;
 static WINCH_PENDING: AtomicBool = AtomicBool::new(false);
 
@@ -66,9 +68,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Share this terminal with agents.
-    Start,
+    #[command(alias = "start")]
+    On,
     /// Stop sharing this terminal.
-    Stop,
+    #[command(alias = "stop")]
+    Off,
     /// Show whether this terminal is being shared.
     Status(StatusArgs),
     /// Run setup wizard or install shell integration / agent skill directly.
@@ -581,8 +585,8 @@ fn run() -> io::Result<()> {
     let cli = Cli::parse();
     if let Some(command) = cli.command {
         return match command {
-            Commands::Start => cmd_start(),
-            Commands::Stop => cmd_stop(),
+            Commands::On => cmd_start(),
+            Commands::Off => cmd_stop(),
             Commands::Context(args) => cmd_context(&args),
             Commands::SendKeys(args) => cmd_send_keys(&args),
             Commands::Capture(args) | Commands::CapturePane(args) => cmd_capture_pane(&args),
@@ -636,8 +640,8 @@ fn print_top_level_help() {
     println!("Usage: hitch [COMMAND]");
     println!();
     println!("User commands:");
-    println!("  start        Share this terminal with agents");
-    println!("  stop         Stop sharing this terminal");
+    println!("  on           Share this terminal with agents");
+    println!("  off          Stop sharing this terminal");
     println!("  status       Show whether this terminal is being shared");
     println!("  setup        Run setup wizard or install shell integration / agent skill");
     println!();
@@ -1206,6 +1210,13 @@ fn tail_raw_bytes(path: &str, limit: u64) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
+fn head_raw_bytes(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
+    let file = OpenOptions::new().read(true).open(path)?;
+    let mut bytes = Vec::new();
+    file.take(limit).read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
 fn file_len(path: &str) -> u64 {
     fs::metadata(path)
         .map(|metadata| metadata.len())
@@ -1602,7 +1613,7 @@ fn cmd_attach(id: Option<&str>) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             format!(
-                "can't start while already sharing terminal {} {}",
+                "can't turn on while already sharing terminal {} {}",
                 style.id(session),
                 style.muted("(Ctrl-\\ to stop)")
             ),
@@ -2535,7 +2546,7 @@ fi
 _HITCH_BIN="${commands[hitch]:-}"
 if [[ -n "${_HITCH_BIN:-}" ]]; then
   function hitch() {
-    if [[ -z "${HITCH_SESSION:-}" && ( "$#" -eq 0 || "$1" == "start" ) ]]; then
+    if [[ -z "${HITCH_SESSION:-}" && ( "$#" -eq 0 || "$1" == "on" || "$1" == "start" ) ]]; then
       fc -W 2>/dev/null
     fi
 
@@ -2547,7 +2558,7 @@ if [[ -n "${_HITCH_BIN:-}" ]]; then
     return "$code"
   }
 
-  alias unhitch='hitch stop'
+  alias unhitch='hitch off'
 fi
 # <<< hitch shell integration <<<"#
 }
@@ -2566,7 +2577,7 @@ fi
 _HITCH_BIN="$(type -P hitch 2>/dev/null || true)"
 if [[ -n "${_HITCH_BIN:-}" ]]; then
   hitch() {
-    if [[ -z "${HITCH_SESSION:-}" && ( "$#" -eq 0 || "$1" == "start" ) ]]; then
+    if [[ -z "${HITCH_SESSION:-}" && ( "$#" -eq 0 || "$1" == "on" || "$1" == "start" ) ]]; then
       history -a 2>/dev/null
     fi
 
@@ -2578,7 +2589,7 @@ if [[ -n "${_HITCH_BIN:-}" ]]; then
     return "$code"
   }
 
-  alias unhitch='hitch stop'
+  alias unhitch='hitch off'
 fi
 # <<< hitch shell integration <<<"#
 }
@@ -2602,7 +2613,7 @@ set -g __hitch_bin (command -s hitch)
 if test -n "$__hitch_bin"
     function hitch
         if not set -q HITCH_SESSION
-            if test (count $argv) -eq 0; or test "$argv[1]" = start
+            if test (count $argv) -eq 0; or test "$argv[1]" = on; or test "$argv[1]" = start
                 history save 2>/dev/null
             end
         end
@@ -2615,7 +2626,7 @@ if test -n "$__hitch_bin"
         return $code
     end
 
-    alias unhitch 'hitch stop'
+    alias unhitch 'hitch off'
 end
 # <<< hitch shell integration <<<"#
 }
@@ -2729,10 +2740,10 @@ fn rendered_log(path: &str) -> String {
 }
 
 fn list_head_lines(path: &Path, limit: usize) -> Vec<String> {
-    let Ok(text) = fs::read_to_string(path) else {
+    let Ok(bytes) = head_raw_bytes(path, CONTEXT_OUTPUT_WINDOW_BYTES) else {
         return Vec::new();
     };
-    let text = render_terminal_text(text.as_bytes());
+    let text = render_terminal_text(&bytes);
     normalize_list_lines(text.lines().map(str::to_string).collect())
         .into_iter()
         .take(limit)
@@ -2740,13 +2751,7 @@ fn list_head_lines(path: &Path, limit: usize) -> Vec<String> {
 }
 
 fn list_tail_lines(path: &str, limit: usize) -> Vec<String> {
-    let Ok(text) = fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    let text = render_terminal_text(text.as_bytes());
-    let lines = normalize_list_lines(text.lines().map(str::to_string).collect());
-    let start = lines.len().saturating_sub(limit);
-    lines.into_iter().skip(start).collect()
+    bounded_rendered_tail_lines(path, limit, true)
 }
 
 fn rendered_lines_from_offset(path: &str, offset: u64, limit: usize) -> Vec<String> {
@@ -2764,6 +2769,36 @@ fn normalize_list_lines(lines: Vec<String>) -> Vec<String> {
         .into_iter()
         .filter(|line| !line.trim().is_empty())
         .collect()
+}
+
+fn bounded_rendered_tail_lines(path: &str, limit: usize, normalize: bool) -> Vec<String> {
+    let len = file_len(path);
+    if len == 0 {
+        return Vec::new();
+    }
+
+    let mut window = CONTEXT_OUTPUT_WINDOW_BYTES.min(CONTEXT_OUTPUT_MAX_BYTES);
+    loop {
+        let Ok(bytes) = tail_raw_bytes(path, window) else {
+            return Vec::new();
+        };
+        let text = render_terminal_text(&bytes);
+        let lines = if normalize {
+            normalize_list_lines(text.lines().map(str::to_string).collect())
+        } else {
+            text.lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(str::to_string)
+                .collect()
+        };
+
+        if lines.len() >= limit || window >= len || window >= CONTEXT_OUTPUT_MAX_BYTES {
+            let start = lines.len().saturating_sub(limit);
+            return lines.into_iter().skip(start).collect();
+        }
+
+        window = (window * 2).min(CONTEXT_OUTPUT_MAX_BYTES);
+    }
 }
 
 fn trim_visual_empty_edges(lines: Vec<String>) -> Vec<String> {
@@ -2796,19 +2831,7 @@ fn contains_line_sequence(lines: &[String], sequence: &[String]) -> bool {
 }
 
 fn rendered_tail_lines(path: &str, limit: usize) -> Vec<String> {
-    let Ok(text) = fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    let text = render_terminal_text(text.as_bytes());
-    text.lines()
-        .filter(|line| !line.trim().is_empty())
-        .rev()
-        .take(limit)
-        .map(str::to_string)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect()
+    bounded_rendered_tail_lines(path, limit, false)
 }
 
 fn rendered_lines_range(path: &str, start: isize, end: Option<isize>) -> Vec<String> {
@@ -2850,10 +2873,11 @@ fn line_index(len: usize, index: isize) -> usize {
 }
 
 fn raw_tail_lines(path: &str, limit: usize) -> Vec<String> {
-    let Ok(text) = fs::read_to_string(path) else {
+    let Ok(bytes) = tail_raw_bytes(path, CONTEXT_OUTPUT_MAX_BYTES) else {
         return Vec::new();
     };
-    text.lines()
+    String::from_utf8_lossy(&bytes)
+        .lines()
         .rev()
         .take(limit)
         .map(str::to_string)
