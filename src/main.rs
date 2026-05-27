@@ -32,6 +32,7 @@ const INSTALL_SOURCE: &str = match option_env!("HITCH_INSTALL_SOURCE") {
 const NPM_PACKAGE_NAME: &str = "hitch-cli";
 const UPDATE_CACHE_TTL_SECS: u64 = 6 * 60 * 60;
 const NPM_REGISTRY_URL: &str = "https://registry.npmjs.org/hitch-cli";
+const HITCH_CWD_SYNC_FILE: &str = "HITCH_CWD_SYNC_FILE";
 
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
@@ -341,6 +342,10 @@ impl CommandTracker {
             return;
         };
 
+        if let Some(cwd) = cwd_for_pgrp(pgrp) {
+            self.state.current_dir = Some(cwd);
+        }
+
         let shell_pgrp = self.shell_pid as i32;
         if pgrp != shell_pgrp {
             if self.current_pgrp != Some(pgrp) {
@@ -351,7 +356,6 @@ impl CommandTracker {
                 let _ = fs::write(&self.output_path, "");
             }
             self.state.command_running = true;
-            self.state.current_dir = cwd_for_pgrp(pgrp);
         } else {
             self.state.active_command = None;
             self.state.command_running = false;
@@ -821,6 +825,7 @@ fn master_loop(
     let mut log_filter = AltScreenLogFilter::default();
     let mut alt_screen = AltScreenTracker::default();
     let mut commands = CommandTracker::new(record, child_pid);
+    let mut last_broadcast_cwd = commands.state.current_dir.clone();
     let mut had_attached = false;
 
     loop {
@@ -859,6 +864,7 @@ fn master_loop(
         }
         if rc == 0 {
             commands.refresh(pty_fd);
+            broadcast_cwd_if_changed(&commands, &mut last_broadcast_cwd, &mut clients);
             continue;
         }
 
@@ -877,6 +883,7 @@ fn master_loop(
 
         if unsafe { libc::FD_ISSET(pty_fd, &readfds) } {
             commands.refresh(pty_fd);
+            broadcast_cwd_if_changed(&commands, &mut last_broadcast_cwd, &mut clients);
             if !drain_pty_output(
                 pty_fd,
                 &mut filter,
@@ -896,6 +903,7 @@ fn master_loop(
             if unsafe { libc::FD_ISSET(fd, &readfds) } {
                 match read_packet(&mut clients[i].stream) {
                     Ok(Some(packet)) if packet.typ == MSG_DETACH_SESSION => {
+                        commands.refresh(pty_fd);
                         let _ = fs::write(stop_marker_path(&record.id), "");
                         clients.clear();
                         continue;
@@ -994,6 +1002,47 @@ fn process_pty_output_chunk(
     });
 }
 
+fn broadcast_cwd_if_changed(
+    commands: &CommandTracker,
+    last_broadcast_cwd: &mut Option<String>,
+    clients: &mut Vec<Client>,
+) {
+    if commands.state.current_dir == *last_broadcast_cwd {
+        return;
+    }
+    *last_broadcast_cwd = commands.state.current_dir.clone();
+    let Some(cwd) = commands.state.current_dir.as_deref() else {
+        return;
+    };
+    broadcast_to_attached(clients, &osc7_cwd(cwd));
+}
+
+fn broadcast_to_attached(clients: &mut Vec<Client>, bytes: &[u8]) {
+    clients.retain_mut(|client| {
+        if !client.attached {
+            return true;
+        }
+        client.stream.write_all(bytes).is_ok()
+    });
+}
+
+fn osc7_cwd(cwd: &str) -> Vec<u8> {
+    format!("\x1b]7;file://localhost{}\x07", percent_encode_path(cwd)).into_bytes()
+}
+
+fn percent_encode_path(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for byte in path.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'.' | b'-' | b'_' | b'~' => {
+                out.push(byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
 fn fd_readable_now(fd: RawFd) -> io::Result<bool> {
     let mut readfds = unsafe { mem::zeroed::<libc::fd_set>() };
     unsafe {
@@ -1073,8 +1122,16 @@ fn handle_packet(
             commands.note_input();
             write_all_fd(pty_fd, &packet.payload)?;
         }
-        MSG_ATTACH => client.attached = true,
-        MSG_DETACH => client.attached = false,
+        MSG_ATTACH => {
+            client.attached = true;
+            if let Some(cwd) = commands.state.current_dir.as_deref() {
+                let _ = client.stream.write_all(&osc7_cwd(cwd));
+            }
+        }
+        MSG_DETACH => {
+            commands.refresh(pty_fd);
+            client.attached = false;
+        }
         MSG_WINCH => unsafe {
             if packet.payload.len() == mem::size_of::<libc::winsize>() {
                 let ws = packet.payload.as_ptr().cast::<libc::winsize>();
@@ -1130,6 +1187,7 @@ fn attach_socket(socket: &str, session_id: &str, log_path: Option<&str>) -> io::
         }
         if unsafe { libc::FD_ISSET(sock_fd, &readfds) } {
             if !drain_socket_to_stdout(&mut stream)? {
+                write_parent_cwd_sync(session_id);
                 if stop_marker_path(session_id).exists() {
                     let _ = fs::remove_file(stop_marker_path(session_id));
                     println!("\r\n{}", exit_message());
@@ -1147,15 +1205,34 @@ fn attach_socket(socket: &str, session_id: &str, log_path: Option<&str>) -> io::
             let mut buf = [0u8; BUF_SIZE];
             let len = unsafe { libc::read(stdin_fd, buf.as_mut_ptr().cast(), buf.len()) };
             if len <= 0 {
+                write_parent_cwd_sync(session_id);
                 return Ok(1);
             }
             if is_detach_key(buf[0]) {
                 send_packet(&mut stream, MSG_DETACH, &[])?;
+                write_parent_cwd_sync(session_id);
                 println!("\r\n{}", exit_message());
                 return Ok(0);
             }
             send_packet(&mut stream, MSG_PUSH, &buf[..len as usize])?;
         }
+    }
+}
+
+fn write_parent_cwd_sync(session_id: &str) {
+    let Some(path) = env::var_os(HITCH_CWD_SYNC_FILE).map(PathBuf::from) else {
+        return;
+    };
+    let state = read_session_state(session_id);
+    let cwd = state
+        .foreground_pgrp
+        .and_then(cwd_for_pgrp)
+        .or(state.current_dir);
+    let Some(cwd) = cwd else {
+        return;
+    };
+    if Path::new(&cwd).is_dir() {
+        let _ = fs::write(path, cwd);
     }
 }
 
@@ -2543,23 +2620,49 @@ if [[ -z "${HITCH_PROMPT_INSTALLED:-}" && -z "${POWERLEVEL9K_LEFT_PROMPT_ELEMENT
   PROMPT='$(_hitch_prompt_segment)'"$PROMPT"
 fi
 
-_HITCH_BIN="${commands[hitch]:-}"
-if [[ -n "${_HITCH_BIN:-}" ]]; then
-  function hitch() {
+function _hitch_run() {
+    local _hitch_command="$1"
+    shift
+    local _hitch_bin="${commands[$_hitch_command]:-}"
+    if [[ -z "${_hitch_bin:-}" ]]; then
+      print -u2 "$_hitch_command: command not found"
+      return 127
+    fi
     if [[ -z "${HITCH_SESSION:-}" && ( "$#" -eq 0 || "$1" == "on" || "$1" == "start" ) ]]; then
       fc -W 2>/dev/null
     fi
 
-    "$_HITCH_BIN" "$@"
+    local _hitch_cwd_file=""
+    if [[ -z "${HITCH_SESSION:-}" ]]; then
+      _hitch_cwd_file="${TMPDIR:-/tmp}/hitch-cwd-$$-$RANDOM"
+      HITCH_CWD_SYNC_FILE="$_hitch_cwd_file" "$_hitch_bin" "$@"
+    else
+      "$_hitch_bin" "$@"
+    fi
     local code=$?
+    if [[ -n "$_hitch_cwd_file" && -s "$_hitch_cwd_file" ]]; then
+      local _hitch_cwd
+      _hitch_cwd="$(cat "$_hitch_cwd_file" 2>/dev/null)"
+      if [[ -d "$_hitch_cwd" ]]; then
+        cd "$_hitch_cwd"
+      fi
+    fi
+    [[ -n "$_hitch_cwd_file" ]] && rm -f "$_hitch_cwd_file"
     if [[ "$code" -eq 42 ]]; then
       exit
     fi
     return "$code"
-  }
+}
 
-  alias unhitch='hitch off'
-fi
+function hitch() {
+  _hitch_run hitch "$@"
+}
+
+alias unhitch='hitch off'
+
+function hitch-dev() {
+  _hitch_run hitch-dev "$@"
+}
 # <<< hitch shell integration <<<"#
 }
 
@@ -2574,23 +2677,50 @@ if [[ -z "${HITCH_PROMPT_INSTALLED:-}" ]]; then
   PS1='$(_hitch_prompt_segment)'"$PS1"
 fi
 
-_HITCH_BIN="$(type -P hitch 2>/dev/null || true)"
-if [[ -n "${_HITCH_BIN:-}" ]]; then
-  hitch() {
+_hitch_run() {
+    local _hitch_command="$1"
+    shift
+    local _hitch_bin
+    _hitch_bin="$(type -P "$_hitch_command" 2>/dev/null || true)"
+    if [[ -z "${_hitch_bin:-}" ]]; then
+      printf '%s: command not found\n' "$_hitch_command" >&2
+      return 127
+    fi
     if [[ -z "${HITCH_SESSION:-}" && ( "$#" -eq 0 || "$1" == "on" || "$1" == "start" ) ]]; then
       history -a 2>/dev/null
     fi
 
-    "$_HITCH_BIN" "$@"
+    local _hitch_cwd_file=""
+    if [[ -z "${HITCH_SESSION:-}" ]]; then
+      _hitch_cwd_file="${TMPDIR:-/tmp}/hitch-cwd-$$-$RANDOM"
+      HITCH_CWD_SYNC_FILE="$_hitch_cwd_file" "$_hitch_bin" "$@"
+    else
+      "$_hitch_bin" "$@"
+    fi
     local code=$?
+    if [[ -n "$_hitch_cwd_file" && -s "$_hitch_cwd_file" ]]; then
+      local _hitch_cwd
+      _hitch_cwd="$(cat "$_hitch_cwd_file" 2>/dev/null)"
+      if [[ -d "$_hitch_cwd" ]]; then
+        cd "$_hitch_cwd"
+      fi
+    fi
+    [[ -n "$_hitch_cwd_file" ]] && rm -f "$_hitch_cwd_file"
     if [[ "$code" -eq 42 ]]; then
       exit
     fi
     return "$code"
-  }
+}
 
-  alias unhitch='hitch off'
-fi
+hitch() {
+  _hitch_run hitch "$@"
+}
+
+alias unhitch='hitch off'
+
+hitch-dev() {
+  _hitch_run hitch-dev "$@"
+}
 # <<< hitch shell integration <<<"#
 }
 
@@ -2609,24 +2739,55 @@ function fish_prompt
     __hitch_original_fish_prompt
 end
 
-set -g __hitch_bin (command -s hitch)
-if test -n "$__hitch_bin"
-    function hitch
+function __hitch_run
+        set -l __hitch_command $argv[1]
+        set -e argv[1]
+        set -l __hitch_bin (command -s "$__hitch_command")
+        if test -z "$__hitch_bin"
+            printf '%s: command not found\n' "$__hitch_command" >&2
+            return 127
+        end
         if not set -q HITCH_SESSION
             if test (count $argv) -eq 0; or test "$argv[1]" = on; or test "$argv[1]" = start
                 history save 2>/dev/null
             end
         end
 
-        "$__hitch_bin" $argv
+        set -l __hitch_cwd_file
+        if not set -q HITCH_SESSION
+            set __hitch_cwd_file (mktemp -t hitch-cwd.XXXXXX 2>/dev/null)
+            if test -n "$__hitch_cwd_file"
+                env HITCH_CWD_SYNC_FILE="$__hitch_cwd_file" "$__hitch_bin" $argv
+            else
+                "$__hitch_bin" $argv
+            end
+        else
+            "$__hitch_bin" $argv
+        end
         set code $status
+        if test -n "$__hitch_cwd_file"; and test -s "$__hitch_cwd_file"
+            set -l __hitch_cwd (cat "$__hitch_cwd_file" 2>/dev/null)
+            if test -d "$__hitch_cwd"
+                cd "$__hitch_cwd"
+            end
+        end
+        if test -n "$__hitch_cwd_file"
+            rm -f "$__hitch_cwd_file"
+        end
         if test $code -eq 42
             exit
         end
         return $code
-    end
+end
 
-    alias unhitch 'hitch off'
+function hitch
+    __hitch_run hitch $argv
+end
+
+alias unhitch 'hitch off'
+
+function hitch-dev
+    __hitch_run hitch-dev $argv
 end
 # <<< hitch shell integration <<<"#
 }

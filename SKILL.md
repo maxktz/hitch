@@ -18,9 +18,8 @@ Use first. Shows compact terminal state and recent useful output.
 
 Forms:
 
-- `hitch context` - project terminals only
-- `hitch context <terminal>` - one terminal, more detailed output, usually paired with specific --tail
-- `hitch context --dir <dir>` - terminals whose origin or current dir is inside `<dir>`
+- `hitch context` - all terminals of current project
+- `hitch context <terminal>` - one specific terminal, more detailed output, usually paired with specific --tail
 - `hitch context --all` - all terminals, includes outside of the project.
 
 Options:
@@ -29,6 +28,7 @@ Options:
 - `--head <n>` - active process head lines. Default: 5, or 10 for `context <terminal>`
 
 Output is summarized for agents: no colors, blank lines removed.
+Avoid using too long --tail for simpler use cases, if not necessary
 
 ### `hitch send-keys -t <terminal> [OPTIONS] <keys...>`
 
