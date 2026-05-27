@@ -2792,10 +2792,18 @@ function _hitch_prompt_segment() {
   [[ -n "${HITCH_SESSION:-}" ]] && print -n "%F{2}#${HITCH_SESSION}%f "
 }
 
+function _hitch_precmd() {
+  [[ -n "${POWERLEVEL9K_LEFT_PROMPT_ELEMENTS:-}" ]] && return
+  [[ -z "${HITCH_SESSION:-}" ]] && return
+  local _hitch_prefix="%F{2}#${HITCH_SESSION}%f "
+  [[ "$PROMPT" == "${_hitch_prefix}"* ]] && return
+  PROMPT="${_hitch_prefix}${PROMPT}"
+}
+
 if [[ -z "${HITCH_PROMPT_INSTALLED:-}" && -z "${POWERLEVEL9K_LEFT_PROMPT_ELEMENTS:-}" ]]; then
   HITCH_PROMPT_INSTALLED=1
-  setopt prompt_subst
-  PROMPT='$(_hitch_prompt_segment)'${PROMPT}
+  autoload -Uz add-zsh-hook
+  add-zsh-hook precmd _hitch_precmd
 fi
 
 function _hitch_run() {
@@ -2850,9 +2858,20 @@ _hitch_prompt_segment() {
   [[ -n "${HITCH_SESSION:-}" ]] && printf '#%s ' "$HITCH_SESSION"
 }
 
+_hitch_prompt_command() {
+  [[ -z "${HITCH_SESSION:-}" ]] && return
+  local _hitch_prefix="\\[\\033[32m\\]#${HITCH_SESSION} \\[\\033[0m\\]"
+  [[ "$PS1" == "${_hitch_prefix}"* ]] && return
+  PS1="${_hitch_prefix}${PS1}"
+}
+
 if [[ -z "${HITCH_PROMPT_INSTALLED:-}" ]]; then
   HITCH_PROMPT_INSTALLED=1
-  PS1='\[\033[32m\]$(_hitch_prompt_segment)\[\033[0m\]'"$PS1"
+  if [[ -n "${PROMPT_COMMAND:-}" ]]; then
+    PROMPT_COMMAND="${PROMPT_COMMAND%;}; _hitch_prompt_command"
+  else
+    PROMPT_COMMAND="_hitch_prompt_command"
+  fi
 fi
 
 _hitch_run() {
