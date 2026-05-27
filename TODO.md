@@ -1,31 +1,22 @@
 - proper installation commands
   - readme
-  - js -> ts
-  - analytics
-  - changesets (signed releases)
-
-- forward shell location
-
-- show session number in terminal title
-
-- show last lines and context since line
+  - release
 
 agent skill:
-
-- prefer send-keys in parallel over sequential
-- fix agent using --dir
-- fix agents inspecting each terminal separately
+  - prefer send-keys in parallel over sequential
 
 - shell hooks wrapping commands
 
-priority 3:
-
-- option for agent to spin up sessions for user to join
+- `hitch list` for users
 
 maybe:
 
+- changesets (signed releases)
 - make send-keys always return output
 - agent inputs history
+- make agents pass --since timestamp into context from previous output (cursors)
+- char guardrail for send-keys or caputre, if too long write to file or give alt way
+- cli analytics
 
 harder to make:
 
@@ -41,3 +32,24 @@ tests:
 - zsh without p10k
 - zsh without oh my zsh
 - default shells
+
+
+
+
+
+...
+
+⣇⡀ ⠄ ⣰⡀ ⢀⣀ ⣇⡀
+⠇⠸ ⠇ ⠘⠤ ⠣⠤ ⠇⠸
+
+⣇⡀ ⠄⢀⣆⡀ ⣀⡀⢸⣀
+⠇⠸ ⠇ ⠣⠄⠘⠤⠄⠸ ⠇
+
+⣇⡀ ⠄⢀⣆⡀ ⢀⣀ ⣇⡀
+⠇⠸ ⠇ ⠣⠄ ⠣⠤ ⠇⠸
+
+⣇⡀ ⠄⢀⣆⡀ ⣀ ⣇⡀
+⠇⠸ ⠇ ⠣⠄⠘⠤ ⠇⠸
+
+⣇⡀ ⠄⢀⣆⡀ ⣀⡀⢸⣀
+⠇⠸ ⠇ ⠣⠄⠘⠤⠄⠸ ⠇
