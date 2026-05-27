@@ -1,6 +1,6 @@
 ---
 name: hitch
-version: 1
+version: 2
 description: Use when you need to inspect or control user's own terminals, or if asked to do something with user's specific terminal, or before starting a dev server, watcher, tunnel, REPL, build, or log tail that may already be running by the user.
 ---
 
@@ -20,15 +20,16 @@ Forms:
 
 - `hitch context` - all terminals of current project
 - `hitch context <terminal>` - one specific terminal, more detailed output, usually paired with specific --tail
-- `hitch context --all` - all terminals, includes outside of the project.
-
-Options:
+- `hitch context --all` - all terminals, includes outside of the project
+  Options:
 
 - `--tail <n>` - recent visible output lines. Default: 20, or 80 for `context <terminal>`
 - `--head <n>` - active process head lines. Default: 5, or 10 for `context <terminal>`
 
 Output is summarized for agents: no colors, blank lines removed.
-Avoid using too long --tail for simpler use cases, if not necessary
+Avoid using too long --tail for simpler use cases, if unnecessary
+Always default to without --all, use this flag only when specifically needed
+Usually in most of simple cases you don't have to pass custom --tail or especially --head
 
 ### `hitch send-keys -t <terminal> [OPTIONS] <keys...>`
 
@@ -48,10 +49,10 @@ Common keys:
 Options:
 
 - `-t, --target <terminal>` - terminal id.
-- `--wait output` - wait until new output appears.
 - `--wait finish` - wait until the foreground command finishes.
-- `--wait quiet:<duration>` - wait until output stops changing for duration, e.g. `quiet:2s`.
+- `--wait quiet:<duration>` - wait until output stops changing for duration, e.g. `quiet:1s`.
 - `--wait time:<duration>` - wait fixed time before returning output, e.g. `time:5s`.
+- `--wait output` - wait until any new output appears.
 - `--timeout <duration>` - max wait time. Default: `30s`.
 - `--tail <n>` - print this many new visible output lines after sending.
 - `--force` - send input even if the terminal has a running process.
@@ -63,7 +64,7 @@ Durations support `ms`, `s`, `m`.
 Examples:
 
 - `hitch send-keys -t 1 C-u "npm test" Enter`
-- `hitch send-keys -t 1 --wait quiet:2s --tail 40 C-u "npm run dev" Enter`
+- `hitch send-keys -t 1 --wait quiet:1s --tail 40 C-u "npm run dev" Enter`
 - `hitch send-keys -t 1 --wait finish --tail 80 C-u "npm test" Enter`
 
 Output behavior:
@@ -79,9 +80,7 @@ While waiting until finish of command, and expect it to be longer than 30s, pass
 
 ### `hitch capture -t <terminal> [OPTIONS]`
 
-Mirrors tmux capture-pane behavior. To capture one terminal, prefer `context <terminal>` over `capture`; use `capture` only if more options needed
-
-Also works with alias `hitch capture-pane`.
+Mirrors tmux capture-pane behavior. To capture one terminal, prefer `context <terminal>` over `capture`; use `capture` only if more options needed. Also works with alias `hitch capture-pane`.
 
 Options:
 
@@ -100,3 +99,6 @@ Accepted compatibility no-op flags:
 - Terminal ids are numbers. If user says "hitch 2", "terminal 2", or "session 2", they likely mean terminal id `2`.
 - Before interrupting user's processes with `C-c`, make sure the user asked for it or it is clearly necessary.
 - Do not send shell commands to terminals with running processes unless you intend to interact with that process. Hitch refuses this by default and prints terminal context; use `--force` only when intentional. A sequence starting with `C-c` is allowed because it interrupts the running process first.
+- If you just started using hitch in fresh chat, usually better to always start with general `hitch context`, not specific terminal right away
+- no need to pre check if CLI is installed, this skill comes with it.
+- in case you or the user facing errors or bugs with hitch, feel free to point them to the github repository https://github.com/maxktz/hitch for feedback or help
