@@ -65,6 +65,8 @@ struct Style {
 struct Cli {
     #[arg(long)]
     skill: bool,
+    #[arg(long, hide = true)]
+    welcome: bool,
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -226,6 +228,10 @@ impl Style {
 
     fn logo(&self, value: impl AsRef<str>) -> String {
         self.paint(value, &[YELLOW])
+    }
+
+    fn success(&self, value: impl AsRef<str>) -> String {
+        self.paint(value, &[GREEN])
     }
 
     fn id(&self, value: impl AsRef<str>) -> String {
@@ -698,6 +704,9 @@ fn run() -> io::Result<()> {
     }
 
     let cli = Cli::parse();
+    if cli.welcome {
+        return cmd_welcome_setup();
+    }
     if let Some(command) = cli.command {
         return match command {
             Commands::On => cmd_start(),
@@ -2459,6 +2468,7 @@ fn cmd_setup(args: &SetupArgs) -> io::Result<()> {
 }
 
 fn cmd_setup_wizard() -> io::Result<()> {
+    let style = Style::stdout();
     println!("hitch setup");
     println!();
 
@@ -2469,9 +2479,42 @@ fn cmd_setup_wizard() -> io::Result<()> {
     if install_skill {
         cmd_install_skill()?;
     } else {
-        println!("agent skill skipped");
+        println!(
+            "{}",
+            style.muted("to install skill later, run `hitch setup`")
+        );
     }
 
+    Ok(())
+}
+
+fn cmd_welcome_setup() -> io::Result<()> {
+    let style = Style::stdout();
+    println!();
+    println!("{}", style.logo("⣇⡀ ⠄⢀⣆⡀ ⣀⡀⢸⣀"));
+    println!("{}", style.logo("⠇⠸ ⠇ ⠣⠄⠘⠤⠄⠸ ⠇"));
+    println!("Welcome to setup!");
+    println!();
+
+    cmd_setup_prompt_with_messages(false)?;
+    println!("{} Shell integration installed", style.success("✓"));
+    println!();
+
+    let install_skill = confirm("Install agent skill?", true)?;
+    if install_skill {
+        cmd_install_skill()?;
+    } else {
+        println!(
+            "{}",
+            style.muted("to install skill later, run `hitch setup`")
+        );
+    }
+
+    println!();
+    println!(
+        "{} Setup completed, restart the terminal and run `hitch` again!",
+        style.success("✓")
+    );
     Ok(())
 }
 
@@ -2485,12 +2528,7 @@ fn ensure_shell_integration() -> io::Result<()> {
             Ok(())
         }
         ShellIntegrationState::Missing => {
-            println!("welcome to hitch");
-            println!("running setup first");
-            println!();
-            cmd_setup_wizard()?;
-            println!();
-            println!("setup complete, run `hitch` again after restarting existing terminals");
+            cmd_welcome_setup()?;
             process::exit(0);
         }
     }
@@ -2504,17 +2542,21 @@ fn confirm(prompt: &str, default: bool) -> io::Result<bool> {
 }
 
 fn cmd_setup_prompt() -> io::Result<()> {
+    cmd_setup_prompt_with_messages(true)
+}
+
+fn cmd_setup_prompt_with_messages(messages: bool) -> io::Result<()> {
     let shell = detect_shell();
     if shell == "zsh" {
-        return setup_zsh_family_prompt();
+        return setup_zsh_family_prompt(messages);
     }
 
     if shell == "bash" {
-        return setup_bash_prompt();
+        return setup_bash_prompt(messages);
     }
 
     if shell == "fish" {
-        return setup_fish_prompt();
+        return setup_fish_prompt(messages);
     }
 
     println!("unsupported shell: {shell}");
@@ -2576,15 +2618,17 @@ fn essential_shell_integration() -> Option<(PathBuf, &'static str)> {
     }
 }
 
-fn setup_zsh_family_prompt() -> io::Result<()> {
+fn setup_zsh_family_prompt(messages: bool) -> io::Result<()> {
     setup_zsh_prompt()?;
 
     if let Some(p10k_path) = home_file(".p10k.zsh").filter(|path| path.exists()) {
         setup_p10k_prompt(&p10k_path)?;
     }
 
-    println!("shell integration updated");
-    println!("restart existing terminals to pick up shell integration");
+    if messages {
+        println!("shell integration updated");
+        println!("restart existing terminals to pick up shell integration");
+    }
 
     Ok(())
 }
@@ -2607,17 +2651,19 @@ fn setup_zsh_prompt() -> io::Result<()> {
     setup_rc_prompt(&path, zsh_prompt_block())
 }
 
-fn setup_bash_prompt() -> io::Result<()> {
+fn setup_bash_prompt(messages: bool) -> io::Result<()> {
     let Some(path) = home_file(".bashrc") else {
         return Err(io::Error::new(io::ErrorKind::NotFound, "HOME is not set"));
     };
     setup_rc_prompt(&path, bash_prompt_block())?;
-    println!("shell integration updated");
-    println!("restart existing terminals to pick up shell integration");
+    if messages {
+        println!("shell integration updated");
+        println!("restart existing terminals to pick up shell integration");
+    }
     Ok(())
 }
 
-fn setup_fish_prompt() -> io::Result<()> {
+fn setup_fish_prompt(messages: bool) -> io::Result<()> {
     let Some(path) = home_file(".config/fish/conf.d/hitch.fish") else {
         return Err(io::Error::new(io::ErrorKind::NotFound, "HOME is not set"));
     };
@@ -2632,8 +2678,10 @@ fn setup_fish_prompt() -> io::Result<()> {
         }
         fs::write(&path, updated)?;
     }
-    println!("shell integration updated");
-    println!("restart existing fish terminals to pick up shell integration");
+    if messages {
+        println!("shell integration updated");
+        println!("restart existing fish terminals to pick up shell integration");
+    }
     Ok(())
 }
 
