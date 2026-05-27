@@ -1,6 +1,6 @@
 ---
 name: hitch
-version: 2
+version: 3
 description: Use when you need to inspect or control user's own terminals, or if asked to do something with user's specific terminal, or before starting a dev server, watcher, tunnel, REPL, build, or log tail that may already be running by the user.
 ---
 
@@ -99,6 +99,42 @@ Accepted compatibility no-op flags:
 - Terminal ids are numbers. If user says "hitch 2", "terminal 2", or "session 2", they likely mean terminal id `2`.
 - Before interrupting user's processes with `C-c`, make sure the user asked for it or it is clearly necessary.
 - Do not send shell commands to terminals with running processes unless you intend to interact with that process. Hitch refuses this by default and prints terminal context; use `--force` only when intentional. A sequence starting with `C-c` is allowed because it interrupts the running process first.
+- If a process is currently running in hitch terminal, you can't run other commands in it without stopping the process, just like with tmux, you would have to send C-c to first, so make sure you were actually asked to stop this process or it's necessary.
 - If you just started using hitch in fresh chat, usually better to always start with general `hitch context`, not specific terminal right away
 - no need to pre check if CLI is installed, this skill comes with it.
 - in case you or the user facing errors or bugs with hitch, feel free to point them to the github repository https://github.com/maxktz/hitch for feedback or help
+- You should not run everything in hitch, only the commands you want to share with the user, or explicitly asked to run in hitch. If you're just running short tool calls like reading files, sending requests, there is absolutely no reason to use hitch over your native tools. Only use hitch for collaboration
+
+- NEVER send a shell command into a terminal which currently has long running process (examples: `next
+dev`, `vite`, `npm run dev`, `rails server`, `cargo watch`,
+  `python -m http.server`) unless the user explicitly asked you to
+  type into that process itself.
+- Treat input sent to such a terminal as stdin for the running
+  process, not as a new shell command. Assume it will not execute in
+  a shell.
+- If you need to make requests against a server running in hitch
+  terminal `N`, use a different execution context:
+  1. your native shell/tooling, if it can reach the server
+  2. a different hitch terminal
+  3. the user’s browser or another user terminal
+- If option 1 fails because of sandbox/network isolation, DO NOT
+  fall back to `hitch send-keys` in the same occupied terminal. Use
+  option 2 or ask the user to make the request, then inspect logs
+  with `hitch context N` or `hitch capture -t N`.
+- `--force` is only for intentionally sending input to the running
+  foreground process itself, not for trying to run another shell
+  command behind it.
+
+  Bad:
+  - terminal 1 is running `pnpm dev`
+  - `hitch send-keys -t 1 --force "curl http://localhost:3000"
+Enter`
+
+  Why bad:
+  - this writes `curl ...` to the dev server's stdin; it does not
+    execute a second shell command
+
+  Good:
+  - keep terminal 1 for the server
+  - make the HTTP request from your a native shell, or another free terminal if explicitly asked
+  - inspect logs in terminal 1 with `hitch context 1 --tail 40`
