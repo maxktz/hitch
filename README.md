@@ -6,7 +6,7 @@
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
       <source media="(prefers-color-scheme: light)" srcset="assets/logo-light.svg">
-      <img alt="Hitch" src="assets/logo-light.svg" height="72">
+      <img alt="Hitch" src="assets/logo-light.svg" height="68">
     </picture>
   </a>
 </p>
@@ -33,9 +33,11 @@
 
 ## What is Hitch?
 
-Hitch is a small CLI for sharing real shell terminals with AI coding agents. Start Hitch in a terminal, then agents can see compact context, send keys, and inspect output without starting duplicate dev servers, watchers, tunnels, or REPLs.
+Hitch is a lightweight CLI for sharing real terminal with AI coding agents. run `hitch` and agents get your terminals context, can run keys or commands, and inspect output.
 
-It is not a terminal multiplexer UI. Your terminal still feels like a normal shell; Hitch just proxies input/output, records useful context, and exposes agent-friendly commands.
+Helps with agents running duplicate dev servers, tunnels, and having to copy-paste logs to your agent.
+
+It is not a terminal multiplexer UI like `tmux`. Your terminal still feels like a normal shell; Hitch just proxies input/output, records useful context, and exposes agent-friendly commands.
 
 ## Install
 
@@ -44,9 +46,9 @@ npm install -g hitch-cli
 hitch
 ```
 
-The first run installs shell integration. Restart existing terminals after setup so your shell picks it up.
+Wizard on first run will help you setup `SKILL.md` with [skills.sh](https://skills.sh) CLI.
 
-Supported platforms: macOS and Linux on arm64 or x64.
+> Supported platforms: macOS and Linux on arm64 or x64.
 
 ## Usage
 
@@ -64,53 +66,16 @@ unhitch
 hitch off
 ```
 
-Show shared terminals for the current project:
+> This is all a human will need! Rest of the commands built for agents.
+
+## SKILL.md
+
+It will help you install it on startup, but to reinstall or update run this:
 
 ```sh
-hitch context
+hitch setup # recommended, uses 'npx skills'
+# or
+npx skills add https://github.com/maxktz/hitch skill hitch
 ```
 
-Send input to a terminal:
-
-```sh
-hitch send-keys -t 1 "npm run dev" Enter
-```
-
-Wait for output to settle and print what changed:
-
-```sh
-hitch send-keys -t 1 --wait quiet:1s --tail 40 "npm test" Enter
-```
-
-Read a faithful terminal transcript:
-
-```sh
-hitch capture -t 1 -p
-```
-
-## Agents
-
-Install the Codex/agent skill:
-
-```sh
-hitch setup skill
-```
-
-Agents should usually start with:
-
-```sh
-hitch context
-```
-
-Then use `send-keys` only when they intentionally want to interact with a terminal. Hitch refuses to send input into a running process by default unless `--force` is used.
-
-## Release
-
-Create a release commit and tag:
-
-```sh
-npm run release -- 0.1.1
-git push origin main --tags
-```
-
-GitHub Actions builds native binaries, publishes `hitch-cli` to npm, and creates a GitHub release.
+> If you're curious how this works for the agent, run `hitch --skill` to see the skill content :D

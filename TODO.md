@@ -1,4 +1,5 @@
 - proper installation commands
+- test on fish or bash
   - readme
   - release
 
