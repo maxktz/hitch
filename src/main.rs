@@ -39,6 +39,7 @@ const BOLD: &str = "\x1b[1m";
 const DIM: &str = "\x1b[2m";
 const GREEN: &str = "\x1b[32m";
 const YELLOW: &str = "\x1b[33m";
+const LIGHT_YELLOW: &str = "\x1b[93m";
 const RED: &str = "\x1b[31m";
 const ATTACH_HISTORY_BYTES: u64 = 64 * 1024;
 const ACTIVE_COMMAND_HEAD_LINES: usize = 5;
@@ -232,6 +233,10 @@ impl Style {
 
     fn success(&self, value: impl AsRef<str>) -> String {
         self.paint(value, &[GREEN])
+    }
+
+    fn light_yellow(&self, value: impl AsRef<str>) -> String {
+        self.paint(value, &[LIGHT_YELLOW])
     }
 
     fn id(&self, value: impl AsRef<str>) -> String {
@@ -948,11 +953,17 @@ fn print_start_message(session_id: &str) {
         style.muted("(Ctrl-\\ to stop)")
     );
     println!();
+    let mut printed_warning = false;
     if let Some(warning) = outdated_skill_warning() {
         println!("{}", style.muted(warning));
+        printed_warning = true;
     }
     if let Some(warning) = update_warning() {
         println!("{}", style.muted(warning));
+        printed_warning = true;
+    }
+    if printed_warning {
+        println!();
     }
 }
 
@@ -2511,9 +2522,20 @@ fn cmd_welcome_setup() -> io::Result<()> {
     }
 
     println!();
+    println!("{} Setup completed", style.success("✓"));
+    println!();
+    println!("{}", style.muted("How to use:"));
+    println!();
     println!(
-        "{} Setup completed, restart the terminal and run `hitch` again!",
-        style.success("✓")
+        "{} Restart your existing terminal",
+        style.light_yellow("1.")
+    );
+    println!("{} Run `{}`", style.light_yellow("2."), style.logo("hitch"));
+    println!(
+        "{} Ask your agent to see it! {}via /hitch skill{}",
+        style.light_yellow("3."),
+        style.muted("("),
+        style.muted(")")
     );
     Ok(())
 }

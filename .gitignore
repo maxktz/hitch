@@ -2,7 +2,6 @@ node_modules
 dist
 target
 native
-bin/hitch
 IDEA.md
 
 docs/name-ideas.md

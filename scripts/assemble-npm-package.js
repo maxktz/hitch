@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-const { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } = require("node:fs");
+const { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync } = require("node:fs");
 const { basename, join } = require("node:path");
 
 const root = join(__dirname, "..");
@@ -29,14 +29,5 @@ for (const dirent of readdirSync(artifacts, { withFileTypes: true })) {
 }
 
 const shim = join(bin, "hitch");
-writeFileSync(
-  shim,
-  [
-    "#!/bin/sh",
-    'echo "hitch native binary was not installed correctly. Try reinstalling hitch-cli." >&2',
-    "exit 1",
-    "",
-  ].join("\n"),
-);
 chmodSync(shim, 0o755);
 console.log(`added ${shim}`);
