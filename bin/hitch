@@ -23,7 +23,16 @@ case "$(uname -s 2>/dev/null)-$(uname -m 2>/dev/null)" in
     ;;
 esac
 
-script_dir="$(CDPATH= cd "$(dirname "$0")" && pwd)"
+# Resolve $0 through symlinks to find the real script directory
+target="$0"
+while [ -L "$target" ]; do
+  link="$(readlink "$target")"
+  case "$link" in
+    /*) target="$link" ;;
+    *) target="$(CDPATH= cd "$(dirname "$target")" && pwd)/$link" ;;
+  esac
+done
+script_dir="$(CDPATH= cd "$(dirname "$target")" && pwd)"
 native="$script_dir/../native/$binary"
 
 if [ ! -x "$native" ]; then
