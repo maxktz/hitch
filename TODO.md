@@ -1,10 +1,8 @@
-- proper installation commands
-- test on fish or bash
-  - readme
-  - release
-
 agent skill:
-  - prefer send-keys in parallel over sequential
+
+- prefer send-keys in parallel over sequential
+- have one command for capture, 2 gets misleading for agents
+- tell them output not always appears, prefer sleep pooling
 
 - shell hooks wrapping commands
 
@@ -12,6 +10,10 @@ agent skill:
 
 maybe:
 
+- view only mode for sharing
+- colorize --help while not by agent
+- starship integration
+- ask user if installing #N prompt
 - changesets (signed releases)
 - make send-keys always return output
 - agent inputs history
@@ -28,15 +30,6 @@ harder to make:
 - keep track of commands history in sessions (hard, requires shell wrapper integration)
 
 tests:
-
-- zsh with p10k and oh my zsh
-- zsh without p10k
-- zsh without oh my zsh
-- default shells
-
-
-
-
 
 ...
 
