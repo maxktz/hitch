@@ -23,7 +23,10 @@ case "$(uname -s 2>/dev/null)-$(uname -m 2>/dev/null)" in
     ;;
 esac
 
-# Resolve $0 through symlinks to find the real script directory
+# Bun and --ignore-scripts installs leave this shell shim in place instead of
+# replacing it with the native binary. Global package managers usually expose
+# bin entries through symlinks, so $0 can point at ~/.bun/bin/hitch or similar.
+# Resolve symlinks first or ../native will be looked up next to the global shim.
 target="$0"
 while [ -L "$target" ]; do
   link="$(readlink "$target")"
