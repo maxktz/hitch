@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   build:
@@ -92,7 +93,7 @@ jobs:
           fi
 
       - name: Publish npm package
-        run: npm publish --access public --ignore-scripts --tag ${{ steps.npm-tag.outputs.tag }}
+        run: npm publish --access public --ignore-scripts --provenance --tag ${{ steps.npm-tag.outputs.tag }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
