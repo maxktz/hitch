@@ -1,6 +1,6 @@
 {
   "name": "hitch-cli",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Share terminals with AI coding agents.",
   "license": "MIT",
   "os": [
