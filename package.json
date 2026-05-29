@@ -2,6 +2,10 @@
   "name": "hitch-cli",
   "version": "0.2.6",
   "description": "Share terminals with AI coding agents.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/maxktz/hitch"
+  },
   "license": "MIT",
   "os": [
     "darwin",
