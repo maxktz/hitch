@@ -68,6 +68,64 @@ hitch off
 
 > This is all a human will need! Rest of the commands built for agents.
 
+## Commands
+
+### `hitch on`
+
+Share the current terminal. Default when you run `hitch` with no subcommand. Alias: `start`.
+
+### `hitch off`
+
+Stop sharing the current terminal. Alias: `stop`. Also available as `unhitch`.
+
+### `hitch status`
+
+Show whether this terminal is shared.
+
+### `hitch setup [shell|skill]`
+
+Re-run the setup wizard. Pass `shell` to install only shell integration, or `skill` to install only the agent skill.
+
+> Commands below are built for agents. The skill teaches them how to use these.
+
+### `hitch context [TERMINAL]`
+
+Show shared terminals and recent output.
+
+```sh
+hitch context              # all terminals in current project
+hitch context 1            # one terminal, more detail
+hitch context --all        # every terminal across projects
+```
+
+Options: `--tail <n>`, `--head <n>`, `--no-output`.
+
+### `hitch send-keys -t <terminal> [OPTIONS] <keys...>`
+
+Send input to a terminal. Mirrors `tmux send-keys`.
+
+```sh
+hitch send-keys -t 1 C-u "npm test" Enter
+hitch send-keys -t 1 --wait quiet:1s --tail 40 C-u "npm run dev" Enter
+hitch send-keys -t 1 --wait finish --tail 80 C-u "npm test" Enter
+```
+
+Options: `--wait <mode>`, `--timeout <duration>`, `--tail <n>`, `--force`.
+
+Wait modes: `output`, `finish`, `quiet:<duration>`, `time:<duration>`. Durations support `ms`, `s`, `m`.
+
+### `hitch capture -t <terminal> [OPTIONS]`
+
+Print a faithful terminal transcript. Mirrors `tmux capture-pane`. Alias: `capture-pane`.
+
+Options: `-p`, `-S <start>`, `-E <end>`, `-e`, `--raw`.
+
+### `hitch kill <terminal>`
+
+Kill a shared terminal.
+
+> Full agent reference: [SKILL.md](SKILL.md). Run `hitch --skill` to print it.
+
 ## SKILL.md
 
 It will help you install it on startup, but to reinstall or update run this:
