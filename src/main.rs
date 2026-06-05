@@ -3,7 +3,7 @@ use std::borrow::Cow;
 use std::env;
 use std::ffi::{CString, OsString};
 use std::fs::{self, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::mem;
 use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -58,6 +58,11 @@ const CONTEXT_SINGLE_TAIL_LINES: usize = 80;
 const CONTEXT_LINE_MAX_CHARS: usize = 1000;
 const CONTEXT_OUTPUT_WINDOW_BYTES: u64 = 64 * 1024;
 const CONTEXT_OUTPUT_MAX_BYTES: u64 = 1024 * 1024;
+const SESSION_LOG_MAX_BYTES: u64 = 32 * 1024 * 1024;
+const SESSION_LOG_RETAIN_BYTES: u64 = 28 * 1024 * 1024;
+const ACTIVE_OUTPUT_MAX_BYTES: u64 = 8 * 1024 * 1024;
+const ACTIVE_OUTPUT_RETAIN_BYTES: u64 = 7 * 1024 * 1024;
+const SESSION_STARTUP_GRACE_SECS: u64 = 5;
 const UNIX_SOCKET_PATH_LIMIT: usize = 100;
 const EXIT_PARENT_CODE: i32 = 42;
 static WINCH_PENDING: AtomicBool = AtomicBool::new(false);
@@ -139,10 +144,16 @@ impl CommandTracker {
         }
         if let Ok(mut file) = OpenOptions::new()
             .create(true)
+            .read(true)
             .append(true)
             .open(&self.output_path)
         {
-            let _ = file.write_all(bytes);
+            let _ = write_capped_log(
+                &mut file,
+                bytes,
+                ACTIVE_OUTPUT_MAX_BYTES,
+                ACTIVE_OUTPUT_RETAIN_BYTES,
+            );
         }
     }
 
@@ -451,6 +462,7 @@ fn master_loop(
     fs::write(&record.pid_file, format!("{child_pid}\n"))?;
     let mut log = OpenOptions::new()
         .create(true)
+        .read(true)
         .append(true)
         .open(&record.log)?;
     let mut clients: Vec<Client> = Vec::new();
@@ -631,7 +643,12 @@ fn process_pty_output_chunk(
         let title_free = log_title_filter.filter(raw);
         let loggable = log_filter.filter(&title_free);
         if !loggable.is_empty() {
-            let _ = log.write_all(&loggable);
+            let _ = write_capped_log(
+                log,
+                &loggable,
+                SESSION_LOG_MAX_BYTES,
+                SESSION_LOG_RETAIN_BYTES,
+            );
             commands.capture_output(&loggable);
         }
     }
@@ -926,8 +943,7 @@ fn tail_raw_bytes(path: &str, limit: u64) -> io::Result<Vec<u8>> {
     let mut file = OpenOptions::new().read(true).open(path)?;
     let len = file.metadata()?.len();
     let start = len.saturating_sub(limit);
-    use std::io::Seek;
-    file.seek(io::SeekFrom::Start(start))?;
+    file.seek(SeekFrom::Start(start))?;
 
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)?;
@@ -937,6 +953,41 @@ fn tail_raw_bytes(path: &str, limit: u64) -> io::Result<Vec<u8>> {
         }
     }
     Ok(bytes)
+}
+
+fn write_capped_log(
+    file: &mut fs::File,
+    bytes: &[u8],
+    max_bytes: u64,
+    retain_bytes: u64,
+) -> io::Result<()> {
+    file.write_all(bytes)?;
+    compact_log_if_needed(file, max_bytes, retain_bytes)
+}
+
+fn compact_log_if_needed(file: &mut fs::File, max_bytes: u64, retain_bytes: u64) -> io::Result<()> {
+    if file.metadata()?.len() <= max_bytes {
+        return Ok(());
+    }
+
+    file.flush()?;
+    let len = file.metadata()?.len();
+    let start = len.saturating_sub(retain_bytes);
+    file.seek(SeekFrom::Start(start))?;
+
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    if start > 0 {
+        if let Some(pos) = bytes.iter().position(|b| *b == b'\n') {
+            bytes.drain(..=pos);
+        }
+    }
+
+    file.set_len(0)?;
+    file.seek(SeekFrom::Start(0))?;
+    file.write_all(&bytes)?;
+    file.seek(SeekFrom::End(0))?;
+    Ok(())
 }
 
 fn head_raw_bytes(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
@@ -954,8 +1005,7 @@ pub(crate) fn file_len(path: &str) -> u64 {
 
 fn read_bytes_from(path: &str, offset: u64) -> io::Result<Vec<u8>> {
     let mut file = OpenOptions::new().read(true).open(path)?;
-    use std::io::Seek;
-    file.seek(io::SeekFrom::Start(offset))?;
+    file.seek(SeekFrom::Start(offset))?;
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)?;
     Ok(bytes)
@@ -1319,7 +1369,7 @@ fn read_sessions() -> io::Result<Vec<SessionRecord>> {
         let Ok(record) = serde_json::from_str::<SessionRecord>(&raw) else {
             continue;
         };
-        if Path::new(&record.socket).exists() {
+        if session_is_alive(&record) {
             records.push(record);
         } else {
             let _ = fs::remove_dir_all(entry.path());
@@ -1332,8 +1382,12 @@ pub(crate) fn find_session(id: Option<&str>) -> io::Result<SessionRecord> {
     let id = id.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing terminal"))?;
     let exact = session_path(id).join("session.json");
     if exact.exists() {
-        return serde_json::from_str(&fs::read_to_string(exact)?)
-            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err));
+        let record = serde_json::from_str::<SessionRecord>(&fs::read_to_string(&exact)?)
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+        if session_is_alive(&record) {
+            return Ok(record);
+        }
+        let _ = fs::remove_dir_all(session_path(id));
     }
     let matches = read_sessions()?
         .into_iter()
@@ -1350,6 +1404,36 @@ pub(crate) fn find_session(id: Option<&str>) -> io::Result<SessionRecord> {
             format!("ambiguous hitch terminal: {id}"),
         )),
     }
+}
+
+fn session_is_alive(record: &SessionRecord) -> bool {
+    if !Path::new(&record.socket).exists() {
+        return false;
+    }
+
+    if let Some(pid) = read_pid(&record.master_pid_file) {
+        return pid_is_alive(pid);
+    }
+
+    record
+        .created_at
+        .parse::<u64>()
+        .ok()
+        .is_some_and(|created| now_epoch().saturating_sub(created) <= SESSION_STARTUP_GRACE_SECS)
+}
+
+fn pid_is_alive(pid: i32) -> bool {
+    if pid <= 0 {
+        return false;
+    }
+    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    if rc == 0 {
+        return true;
+    }
+    matches!(
+        io::Error::last_os_error().raw_os_error(),
+        Some(code) if code == libc::EPERM
+    )
 }
 
 // Kept for manual debugging while the public CLI no longer exposes interactive attach/join.
@@ -1395,7 +1479,7 @@ fn cmd_capture_pane(args: &CapturePaneArgs) -> io::Result<()> {
         }
     } else {
         let text = if raw {
-            fs::read_to_string(session.log).unwrap_or_default()
+            raw_log(&session.log)
         } else {
             rendered_log(&session.log)
         };
@@ -1530,10 +1614,17 @@ fn running_for(started_at: u64) -> String {
 }
 
 fn rendered_log(path: &str) -> String {
-    let Ok(text) = fs::read_to_string(path) else {
+    let Ok(bytes) = tail_raw_bytes(path, SESSION_LOG_MAX_BYTES) else {
         return String::new();
     };
-    render_terminal_text(text.as_bytes())
+    render_terminal_text(&bytes)
+}
+
+fn raw_log(path: &str) -> String {
+    let Ok(bytes) = tail_raw_bytes(path, SESSION_LOG_MAX_BYTES) else {
+        return String::new();
+    };
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 fn list_head_lines(path: &Path, limit: usize) -> Vec<String> {
@@ -1632,17 +1723,22 @@ fn rendered_tail_lines(path: &str, limit: usize) -> Vec<String> {
 }
 
 fn rendered_lines_range(path: &str, start: isize, end: Option<isize>) -> Vec<String> {
-    let Ok(text) = fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    let text = render_terminal_text(text.as_bytes());
+    if start < 0 && end.is_none_or(|end| end < 0) {
+        let lines = rendered_tail_lines(path, negative_range_tail_limit(start, end));
+        return lines_range_from_owned(lines, start, end);
+    }
+
+    let text = rendered_log(path);
     lines_range(&text, start, end)
 }
 
 fn raw_lines_range(path: &str, start: isize, end: Option<isize>) -> Vec<String> {
-    let Ok(text) = fs::read_to_string(path) else {
-        return Vec::new();
-    };
+    if start < 0 && end.is_none_or(|end| end < 0) {
+        let lines = raw_tail_lines(path, negative_range_tail_limit(start, end));
+        return lines_range_from_owned(lines, start, end);
+    }
+
+    let text = raw_log(path);
     lines_range(&text, start, end)
 }
 
@@ -1659,6 +1755,24 @@ fn lines_range(text: &str, start: isize, end: Option<isize>) -> Vec<String> {
         .take(end.saturating_sub(start))
         .map(str::to_string)
         .collect()
+}
+
+fn lines_range_from_owned(lines: Vec<String>, start: isize, end: Option<isize>) -> Vec<String> {
+    let start = line_index(lines.len(), start);
+    let end = end
+        .map(|end| line_index(lines.len(), end).saturating_add(1))
+        .unwrap_or(lines.len())
+        .min(lines.len());
+    lines
+        .into_iter()
+        .skip(start)
+        .take(end.saturating_sub(start))
+        .collect()
+}
+
+fn negative_range_tail_limit(start: isize, end: Option<isize>) -> usize {
+    end.map(|end| start.unsigned_abs().max(end.unsigned_abs()))
+        .unwrap_or_else(|| start.unsigned_abs())
 }
 
 fn line_index(len: usize, index: isize) -> usize {
@@ -1743,5 +1857,68 @@ mod tests {
             socket_path_in_temp("7", 1234, &long_temp),
             PathBuf::from("/tmp/hitch-1234-7.sock")
         );
+    }
+
+    #[test]
+    fn capped_log_keeps_recent_bytes_on_line_boundary() {
+        let path = env::temp_dir().join(format!(
+            "hitch-capped-log-test-{}-{}.log",
+            process::id(),
+            now_epoch()
+        ));
+        let mut file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .append(true)
+            .open(&path)
+            .unwrap();
+
+        write_capped_log(&mut file, b"aa\nbb\ncc\ndd\n", 10, 7).unwrap();
+        drop(file);
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "cc\ndd\n");
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn negative_range_with_end_before_start_is_empty() {
+        let lines = ["1", "2", "3", "4", "5"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+
+        assert!(lines_range_from_owned(lines, -2, Some(-4)).is_empty());
+        assert_eq!(negative_range_tail_limit(-2, Some(-4)), 4);
+    }
+
+    #[test]
+    fn session_liveness_requires_existing_socket_and_live_pid() {
+        let dir = env::temp_dir().join(format!(
+            "hitch-session-liveness-test-{}-{}",
+            process::id(),
+            now_epoch()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("socket");
+        let master_pid_file = dir.join("master.pid");
+        fs::write(&socket, "").unwrap();
+        fs::write(&master_pid_file, format!("{}\n", process::id())).unwrap();
+
+        let record = SessionRecord {
+            id: "test".to_string(),
+            cwd: dir.to_string_lossy().into_owned(),
+            socket: socket.to_string_lossy().into_owned(),
+            log: dir.join("output.log").to_string_lossy().into_owned(),
+            pid_file: dir.join("child.pid").to_string_lossy().into_owned(),
+            master_pid_file: master_pid_file.to_string_lossy().into_owned(),
+            created_at: now_epoch().to_string(),
+            shell: "/bin/zsh".to_string(),
+        };
+
+        assert!(session_is_alive(&record));
+        fs::write(&record.master_pid_file, "0\n").unwrap();
+        assert!(!session_is_alive(&record));
+
+        let _ = fs::remove_dir_all(dir);
     }
 }

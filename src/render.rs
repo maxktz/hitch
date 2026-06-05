@@ -103,14 +103,20 @@ pub(crate) fn render_terminal_text(bytes: &[u8]) -> String {
                 i = apply_escape(bytes, i, &mut term);
             }
             byte if byte >= 0x20 => {
-                if let Ok(text) = std::str::from_utf8(&bytes[i..]) {
-                    if let Some(ch) = text.chars().next() {
-                        term.put(ch);
-                        i += ch.len_utf8();
-                    } else {
-                        i += 1;
-                    }
+                if byte < 0x80 {
+                    term.put(byte as char);
+                    i += 1;
                 } else {
+                    let width = utf8_char_width(byte);
+                    if width > 1 && i + width <= bytes.len() {
+                        if let Ok(text) = std::str::from_utf8(&bytes[i..i + width]) {
+                            if let Some(ch) = text.chars().next() {
+                                term.put(ch);
+                                i += width;
+                                continue;
+                            }
+                        }
+                    }
                     term.put(byte as char);
                     i += 1;
                 }
@@ -119,6 +125,15 @@ pub(crate) fn render_terminal_text(bytes: &[u8]) -> String {
         }
     }
     term.finish()
+}
+
+fn utf8_char_width(byte: u8) -> usize {
+    match byte {
+        0xC2..=0xDF => 2,
+        0xE0..=0xEF => 3,
+        0xF0..=0xF4 => 4,
+        _ => 1,
+    }
 }
 
 fn apply_escape(bytes: &[u8], mut i: usize, term: &mut TextTerminal) -> usize {
