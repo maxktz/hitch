@@ -1,6 +1,6 @@
 {
   "name": "hitch-cli",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "Share terminals with AI coding agents.",
   "repository": {
     "type": "git",
