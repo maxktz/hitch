@@ -29,6 +29,10 @@
   <a href="https://www.npmjs.com/package/hitch-cli"><img src="https://img.shields.io/npm/dt/hitch-cli?style=flat-square&color=333" alt="npm downloads"></a>
 </p>
 
+<p align="center">
+  <img alt="Hitch preview" src="assets/preview.jpg" width="900">
+</p>
+
 ---
 
 ## What is Hitch?
