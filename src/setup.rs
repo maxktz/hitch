@@ -624,52 +624,52 @@ fn p10k_prompt_block() -> &'static str {
 
 fn zsh_prompt_block() -> &'static str {
     r#"# >>> hitch shell integration >>>
-function _hitch_prompt_segment() {
+function hitch_prompt_segment() {
   [[ -n "${HITCH_SESSION:-}" ]] && print -n "%F{2}#${HITCH_SESSION}%f "
 }
 
-function _hitch_precmd() {
+function hitch_precmd() {
   [[ -n "${POWERLEVEL9K_LEFT_PROMPT_ELEMENTS:-}" ]] && return
   [[ -z "${HITCH_SESSION:-}" ]] && return
-  local _hitch_prefix="%F{2}#${HITCH_SESSION}%f "
-  [[ "$PROMPT" == "${_hitch_prefix}"* ]] && return
-  PROMPT="${_hitch_prefix}${PROMPT}"
+  local hitch_prefix="%F{2}#${HITCH_SESSION}%f "
+  [[ "$PROMPT" == "${hitch_prefix}"* ]] && return
+  PROMPT="${hitch_prefix}${PROMPT}"
 }
 
 if [[ -z "${HITCH_PROMPT_INSTALLED:-}" && -z "${POWERLEVEL9K_LEFT_PROMPT_ELEMENTS:-}" ]]; then
   HITCH_PROMPT_INSTALLED=1
   autoload -Uz add-zsh-hook
-  add-zsh-hook precmd _hitch_precmd
+  add-zsh-hook precmd hitch_precmd
 fi
 
-function _hitch_run() {
-    local _hitch_command="$1"
+function hitch_dispatch() {
+    local hitch_command="$1"
     shift
-    local _hitch_bin="${commands[$_hitch_command]:-}"
-    if [[ -z "${_hitch_bin:-}" ]]; then
-      print -u2 "$_hitch_command: command not found"
+    local hitch_bin="${commands[$hitch_command]:-}"
+    if [[ -z "${hitch_bin:-}" ]]; then
+      print -u2 "$hitch_command: command not found"
       return 127
     fi
     if [[ -z "${HITCH_SESSION:-}" && ( "$#" -eq 0 || "$1" == "on" || "$1" == "start" ) ]]; then
       fc -W 2>/dev/null
     fi
 
-    local _hitch_cwd_file=""
+    local hitch_cwd_file=""
     if [[ -z "${HITCH_SESSION:-}" ]]; then
-      _hitch_cwd_file="${TMPDIR:-/tmp}/hitch-cwd-$$-$RANDOM"
-      HITCH_CWD_SYNC_FILE="$_hitch_cwd_file" "$_hitch_bin" "$@"
+      hitch_cwd_file="${TMPDIR:-/tmp}/hitch-cwd-$$-$RANDOM"
+      HITCH_CWD_SYNC_FILE="$hitch_cwd_file" "$hitch_bin" "$@"
     else
-      "$_hitch_bin" "$@"
+      "$hitch_bin" "$@"
     fi
     local code=$?
-    if [[ -n "$_hitch_cwd_file" && -s "$_hitch_cwd_file" ]]; then
-      local _hitch_cwd
-      _hitch_cwd="$(cat "$_hitch_cwd_file" 2>/dev/null)"
-      if [[ -d "$_hitch_cwd" ]]; then
-        cd "$_hitch_cwd"
+    if [[ -n "$hitch_cwd_file" && -s "$hitch_cwd_file" ]]; then
+      local hitch_cwd
+      hitch_cwd="$(cat "$hitch_cwd_file" 2>/dev/null)"
+      if [[ -d "$hitch_cwd" ]]; then
+        cd "$hitch_cwd"
       fi
     fi
-    [[ -n "$_hitch_cwd_file" ]] && rm -f "$_hitch_cwd_file"
+    [[ -n "$hitch_cwd_file" ]] && rm -f "$hitch_cwd_file"
     if [[ "$code" -eq 42 ]]; then
       exit
     fi
@@ -677,68 +677,68 @@ function _hitch_run() {
 }
 
 function hitch() {
-  _hitch_run hitch "$@"
+  hitch_dispatch hitch "$@"
 }
 
 alias unhitch='hitch off'
 
 function hitch-dev() {
-  _hitch_run hitch-dev "$@"
+  hitch_dispatch hitch-dev "$@"
 }
 # <<< hitch shell integration <<<"#
 }
 
 fn bash_prompt_block() -> &'static str {
     r#"# >>> hitch shell integration >>>
-_hitch_prompt_segment() {
+hitch_prompt_segment() {
   [[ -n "${HITCH_SESSION:-}" ]] && printf '#%s ' "$HITCH_SESSION"
 }
 
-_hitch_prompt_command() {
+hitch_prompt_command() {
   [[ -z "${HITCH_SESSION:-}" ]] && return
-  local _hitch_prefix="\\[\\033[32m\\]#${HITCH_SESSION} \\[\\033[0m\\]"
-  [[ "$PS1" == "${_hitch_prefix}"* ]] && return
-  PS1="${_hitch_prefix}${PS1}"
+  local hitch_prefix="\\[\\033[32m\\]#${HITCH_SESSION} \\[\\033[0m\\]"
+  [[ "$PS1" == "${hitch_prefix}"* ]] && return
+  PS1="${hitch_prefix}${PS1}"
 }
 
 if [[ -z "${HITCH_PROMPT_INSTALLED:-}" ]]; then
   HITCH_PROMPT_INSTALLED=1
   if [[ -n "${PROMPT_COMMAND:-}" ]]; then
-    PROMPT_COMMAND="${PROMPT_COMMAND%;}; _hitch_prompt_command"
+    PROMPT_COMMAND="${PROMPT_COMMAND%;}; hitch_prompt_command"
   else
-    PROMPT_COMMAND="_hitch_prompt_command"
+    PROMPT_COMMAND="hitch_prompt_command"
   fi
 fi
 
-_hitch_run() {
-    local _hitch_command="$1"
+hitch_dispatch() {
+    local hitch_command="$1"
     shift
-    local _hitch_bin
-    _hitch_bin="$(type -P "$_hitch_command" 2>/dev/null || true)"
-    if [[ -z "${_hitch_bin:-}" ]]; then
-      printf '%s: command not found\n' "$_hitch_command" >&2
+    local hitch_bin
+    hitch_bin="$(type -P "$hitch_command" 2>/dev/null || true)"
+    if [[ -z "${hitch_bin:-}" ]]; then
+      printf '%s: command not found\n' "$hitch_command" >&2
       return 127
     fi
     if [[ -z "${HITCH_SESSION:-}" && ( "$#" -eq 0 || "$1" == "on" || "$1" == "start" ) ]]; then
       history -a 2>/dev/null
     fi
 
-    local _hitch_cwd_file=""
+    local hitch_cwd_file=""
     if [[ -z "${HITCH_SESSION:-}" ]]; then
-      _hitch_cwd_file="${TMPDIR:-/tmp}/hitch-cwd-$$-$RANDOM"
-      HITCH_CWD_SYNC_FILE="$_hitch_cwd_file" "$_hitch_bin" "$@"
+      hitch_cwd_file="${TMPDIR:-/tmp}/hitch-cwd-$$-$RANDOM"
+      HITCH_CWD_SYNC_FILE="$hitch_cwd_file" "$hitch_bin" "$@"
     else
-      "$_hitch_bin" "$@"
+      "$hitch_bin" "$@"
     fi
     local code=$?
-    if [[ -n "$_hitch_cwd_file" && -s "$_hitch_cwd_file" ]]; then
-      local _hitch_cwd
-      _hitch_cwd="$(cat "$_hitch_cwd_file" 2>/dev/null)"
-      if [[ -d "$_hitch_cwd" ]]; then
-        cd "$_hitch_cwd"
+    if [[ -n "$hitch_cwd_file" && -s "$hitch_cwd_file" ]]; then
+      local hitch_cwd
+      hitch_cwd="$(cat "$hitch_cwd_file" 2>/dev/null)"
+      if [[ -d "$hitch_cwd" ]]; then
+        cd "$hitch_cwd"
       fi
     fi
-    [[ -n "$_hitch_cwd_file" ]] && rm -f "$_hitch_cwd_file"
+    [[ -n "$hitch_cwd_file" ]] && rm -f "$hitch_cwd_file"
     if [[ "$code" -eq 42 ]]; then
       exit
     fi
@@ -746,21 +746,21 @@ _hitch_run() {
 }
 
 hitch() {
-  _hitch_run hitch "$@"
+  hitch_dispatch hitch "$@"
 }
 
 alias unhitch='hitch off'
 
 hitch-dev() {
-  _hitch_run hitch-dev "$@"
+  hitch_dispatch hitch-dev "$@"
 }
 # <<< hitch shell integration <<<"#
 }
 
 fn fish_prompt_block() -> &'static str {
     r#"# >>> hitch shell integration >>>
-if not functions -q __hitch_original_fish_prompt
-    functions -c fish_prompt __hitch_original_fish_prompt
+if not functions -q hitch_original_fish_prompt
+    functions -c fish_prompt hitch_original_fish_prompt
 end
 
 function fish_prompt
@@ -769,15 +769,15 @@ function fish_prompt
         printf '#%s ' $HITCH_SESSION
         set_color normal
     end
-    __hitch_original_fish_prompt
+    hitch_original_fish_prompt
 end
 
-function __hitch_run
-        set -l __hitch_command $argv[1]
+function hitch_dispatch
+        set -l hitch_command $argv[1]
         set -e argv[1]
-        set -l __hitch_bin (command -s "$__hitch_command")
-        if test -z "$__hitch_bin"
-            printf '%s: command not found\n' "$__hitch_command" >&2
+        set -l hitch_bin (command -s "$hitch_command")
+        if test -z "$hitch_bin"
+            printf '%s: command not found\n' "$hitch_command" >&2
             return 127
         end
         if not set -q HITCH_SESSION
@@ -786,26 +786,26 @@ function __hitch_run
             end
         end
 
-        set -l __hitch_cwd_file
+        set -l hitch_cwd_file
         if not set -q HITCH_SESSION
-            set __hitch_cwd_file (mktemp -t hitch-cwd.XXXXXX 2>/dev/null)
-            if test -n "$__hitch_cwd_file"
-                env HITCH_CWD_SYNC_FILE="$__hitch_cwd_file" "$__hitch_bin" $argv
+            set hitch_cwd_file (mktemp -t hitch-cwd.XXXXXX 2>/dev/null)
+            if test -n "$hitch_cwd_file"
+                env HITCH_CWD_SYNC_FILE="$hitch_cwd_file" "$hitch_bin" $argv
             else
-                "$__hitch_bin" $argv
+                "$hitch_bin" $argv
             end
         else
-            "$__hitch_bin" $argv
+            "$hitch_bin" $argv
         end
         set code $status
-        if test -n "$__hitch_cwd_file"; and test -s "$__hitch_cwd_file"
-            set -l __hitch_cwd (cat "$__hitch_cwd_file" 2>/dev/null)
-            if test -d "$__hitch_cwd"
-                cd "$__hitch_cwd"
+        if test -n "$hitch_cwd_file"; and test -s "$hitch_cwd_file"
+            set -l hitch_cwd (cat "$hitch_cwd_file" 2>/dev/null)
+            if test -d "$hitch_cwd"
+                cd "$hitch_cwd"
             end
         end
-        if test -n "$__hitch_cwd_file"
-            rm -f "$__hitch_cwd_file"
+        if test -n "$hitch_cwd_file"
+            rm -f "$hitch_cwd_file"
         end
         if test $code -eq 42
             exit
@@ -814,13 +814,13 @@ function __hitch_run
 end
 
 function hitch
-    __hitch_run hitch $argv
+    hitch_dispatch hitch $argv
 end
 
 alias unhitch 'hitch off'
 
 function hitch-dev
-    __hitch_run hitch-dev $argv
+    hitch_dispatch hitch-dev $argv
 end
 # <<< hitch shell integration <<<"#
 }
